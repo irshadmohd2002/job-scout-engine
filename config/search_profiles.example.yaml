@@ -1,0 +1,64 @@
+# Search profiles narrow a candidate profile into a concrete, runnable search.
+# `job-scout run-once --profile strategy-global` looks up the profile by id below.
+#
+# API quota/execution guardrails (max countries per run, pages per source,
+# timeouts, retries, etc.) are NOT set here — they live in
+# config/execution_limits.example.yaml as engine-level config, deliberately
+# separate so a broad profile like strategy-global below can never raise its
+# own safety ceiling. See architecture.md section 11a.
+
+profiles:
+  - profile_id: strategy-global
+    candidate_profile_ref: default-candidate
+    description: >
+      Broad international sweep across strategy, transformation, chief-of-staff
+      and program-management roles, open to sponsorship/relocation markets.
+      Intentionally lists 9 countries against a default
+      max_countries_per_run of 6 (config/execution_limits.example.yaml), and
+      includes AE, which adzuna_api's registry entry does not cover — both
+      exercise the planner's guardrail and per-source-country exclusion
+      behaviour described in architecture.md section 11a.
+
+    included_countries: [GB, DE, NL, IE, AE, SG, CA, AU, US]
+    excluded_countries: []
+    included_cities: []
+    excluded_cities: []
+
+    role_families: [] # empty = inherit all from candidate profile
+
+    employment_types: [full_time]
+    min_experience_years: 4
+    max_experience_years: 12
+
+    required_languages: [] # empty = none required
+    mandatory_qualifications: [] # empty = none beyond candidate's own profile
+    security_clearance_allowed: false # candidate is not eligible for cleared roles
+
+    # Hard-filter behaviour (Stage 1) — see architecture.md.
+    reject_on_explicit_no_sponsorship: true
+
+    notification_thresholds:
+      priority_score: 85
+      digest_score: 70
+
+    polling_frequency_minutes: 720 # twice daily, matches M1's run-once/digest model
+
+  - profile_id: strategy-uk
+    candidate_profile_ref: default-candidate
+    description: "UK-focused variant, useful for testing sponsor-register-heavy scoring."
+    included_countries: [GB]
+    excluded_countries: []
+    included_cities: []
+    excluded_cities: []
+    role_families: []
+    employment_types: [full_time]
+    min_experience_years: 4
+    max_experience_years: 12
+    required_languages: []
+    mandatory_qualifications: []
+    security_clearance_allowed: false
+    reject_on_explicit_no_sponsorship: true
+    notification_thresholds:
+      priority_score: 85
+      digest_score: 70
+    polling_frequency_minutes: 720

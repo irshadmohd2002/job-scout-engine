@@ -1,0 +1,36 @@
+# Engine-level API quota and execution guardrails.
+# Deliberately NOT part of search_profiles.yaml: a search profile describes
+# what the candidate wants to find, not how hard the engine is allowed to
+# hit an external API. These limits apply uniformly regardless of how broad
+# a search profile is, and regardless of --dry-run (dry-run only disables
+# notification dispatch and other external writes — see architecture.md
+# section 11, "Dry-run semantics" — it does not relax these guardrails).
+#
+# cp config/execution_limits.example.yaml config/execution_limits.yaml
+# then adjust to your own risk tolerance / API quota.
+
+# Caps how many countries one `run-once` invocation will query, even if the
+# selected search profile's included_countries lists more. If exceeded, the
+# planner keeps the highest source-selection-scoring countries and records
+# the truncation on the SearchExecutionPlan rather than silently dropping it.
+max_countries_per_run: 6
+
+# Caps pagination depth per (source, country) pair.
+max_pages_per_source_country: 3
+
+# Page size requested from a source's API.
+results_per_page: 50
+
+# HTTPX request timeout, in seconds, applied per outbound request.
+request_timeout_seconds: 15
+
+# Retry attempts on a transient failure (e.g. HTTP 429/5xx) before that
+# source is marked "partial" for this run. Retries use adapter-owned
+# backoff; this is only the ceiling on attempts.
+max_retries: 2
+
+# Optional hard ceiling on total jobs pulled through the pipeline in one
+# invocation, across all sources combined. Leave null for no extra ceiling
+# beyond the country/page/page-size limits above. Recommended to set
+# explicitly while testing a broad profile for the first time.
+max_jobs_processed_per_run: null

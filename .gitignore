@@ -1,3 +1,9 @@
+# Personal, machine-specific Claude Code settings — never shared/committed.
+# Do NOT ignore the whole .claude/ directory: it may later hold
+# project-shared config (e.g. settings.json, custom commands) that should
+# be tracked.
+.claude/settings.local.json
+
 .venv/
 __pycache__/
 *.py[cod]
@@ -8,8 +14,14 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+data/
 dist/
 build/
 *.egg-info/
 .vscode/
 .idea/
+
+# Real, non-example config — contains personal candidate/profile data.
+# Only *.example.yaml files under config/ are tracked.
+config/*.yaml
+!config/*.example.yaml

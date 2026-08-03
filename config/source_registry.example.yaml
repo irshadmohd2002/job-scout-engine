@@ -1,0 +1,274 @@
+# Source registry — the compliance-gated catalogue the planner selects from.
+# This file is illustrative: it shows the breadth of access_mode/approval_status
+# combinations the model must support. Only entries with
+# approval_status: approved AND an auto-executable access_mode are ever
+# collected automatically by Milestone 1 (see architecture.md, "Compliance gate").
+#
+# access_mode: public_api | public_ats_feed | rss_or_sitemap | email_alert |
+#              permitted_html | search_discovery | manual_only | disabled
+# approval_status: approved | alert_only | requires_authorisation |
+#                   manual_review | blocked | deprecated
+
+sources:
+  - source_id: adzuna_api
+    name: "Adzuna Job Search API"
+    source_type: aggregator_api
+    # Deliberately excludes AE and IN: Adzuna's public API has no confirmed
+    # coverage for either (verify against Adzuna's current docs before
+    # implementation — see architecture.md R-1). search_profiles.example.yaml's
+    # strategy-global profile still requests AE on purpose, so the planner's
+    # per-source-country exclusion behaviour (architecture.md section 11a)
+    # has a concrete worked example: AE must appear as excluded/non-executable
+    # for this source, with zero API requests made for it.
+    geographic_coverage: [GB, DE, NL, IE, SG, CA, AU, US]
+    role_coverage: [general]
+    access_mode: public_api
+    approval_status: approved
+    terms_compliance_status: reviewed_ok
+    auth_required: true
+    technical_feasibility: high
+    expected_value: high
+    priority: 100
+    polling_frequency_minutes: 720
+    config_status: needs_credentials # requires ADZUNA_APP_ID / ADZUNA_APP_KEY
+    required_setup_actions:
+      - "Register Adzuna developer account and set ADZUNA_APP_ID/ADZUNA_APP_KEY"
+    adapter_ref: adzuna
+    reliability_score: 0.9
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: greenhouse_public_feeds
+    name: "Greenhouse public job-board JSON feeds"
+    source_type: ats_feed
+    geographic_coverage: [GB, DE, NL, IE, AE, SG, CA, AU, US, IN]
+    role_coverage: [general]
+    access_mode: public_ats_feed
+    approval_status: manual_review
+    terms_compliance_status: reviewed_ok
+    auth_required: false
+    technical_feasibility: high
+    expected_value: high
+    priority: 90
+    polling_frequency_minutes: 360
+    config_status: needs_setup # requires per-company board token list (watchlist)
+    required_setup_actions:
+      - "Build priority-company watchlist with Greenhouse board tokens"
+      - "Promote to approved once watchlist + polling cadence are confirmed"
+    adapter_ref: null # not implemented until watchlist exists (post-M1)
+    reliability_score: 0.85
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: lever_public_postings
+    name: "Lever public postings API"
+    source_type: ats_feed
+    geographic_coverage: [GB, DE, NL, IE, US, CA]
+    role_coverage: [general]
+    access_mode: public_ats_feed
+    approval_status: manual_review
+    terms_compliance_status: reviewed_ok
+    auth_required: false
+    technical_feasibility: high
+    expected_value: medium
+    priority: 80
+    polling_frequency_minutes: 360
+    config_status: needs_setup
+    required_setup_actions:
+      - "Build priority-company watchlist with Lever company slugs"
+    adapter_ref: null
+    reliability_score: 0.85
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: naukri_alerts
+    name: "Naukri.com job alerts (email)"
+    source_type: job_portal
+    geographic_coverage: [IN]
+    role_coverage: [general]
+    access_mode: email_alert
+    approval_status: alert_only
+    terms_compliance_status: reviewed_ok
+    auth_required: true # candidate's own Naukri account
+    technical_feasibility: medium
+    expected_value: medium
+    priority: 60
+    polling_frequency_minutes: 1440
+    config_status: not_configured
+    required_setup_actions:
+      - "Candidate sets up saved search + email alerts on Naukri"
+      - "Implement email-alert ingestion (post-M1)"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: iimjobs_alerts
+    name: "iimjobs.com job alerts (email)"
+    source_type: job_portal
+    geographic_coverage: [IN]
+    role_coverage: [strategy_and_planning, corporate_strategy, program_management]
+    access_mode: email_alert
+    approval_status: alert_only
+    terms_compliance_status: reviewed_ok
+    auth_required: true
+    technical_feasibility: medium
+    expected_value: medium
+    priority: 55
+    polling_frequency_minutes: 1440
+    config_status: not_configured
+    required_setup_actions:
+      - "Candidate sets up saved search + email alerts on iimjobs"
+      - "Implement email-alert ingestion (post-M1)"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: naukrigulf_alerts
+    name: "Naukrigulf job alerts (email)"
+    source_type: job_portal
+    geographic_coverage: [middle_east]
+    role_coverage: [general]
+    access_mode: email_alert
+    approval_status: alert_only
+    terms_compliance_status: reviewed_ok
+    auth_required: true
+    technical_feasibility: medium
+    expected_value: medium
+    priority: 50
+    polling_frequency_minutes: 1440
+    config_status: not_configured
+    required_setup_actions:
+      - "Candidate sets up saved search + email alerts on Naukrigulf"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: indeed_country_alerts
+    name: "Indeed country alerts / approved integration"
+    source_type: aggregator_api
+    geographic_coverage: [GB, AE, SG, CA, AU, IN]
+    role_coverage: [general]
+    access_mode: email_alert
+    approval_status: requires_authorisation
+    terms_compliance_status: unclear
+    auth_required: true
+    technical_feasibility: medium
+    expected_value: high
+    priority: 70
+    polling_frequency_minutes: 1440
+    config_status: not_configured
+    required_setup_actions:
+      - "Review Indeed Publisher/XML API terms before any automated access"
+      - "If unavailable, use candidate email alerts only"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: uk_find_a_job
+    name: "UK Government Find a Job service"
+    source_type: government
+    geographic_coverage: [GB]
+    role_coverage: [general]
+    access_mode: permitted_html
+    approval_status: manual_review
+    terms_compliance_status: unclear
+    auth_required: false
+    technical_feasibility: medium
+    expected_value: medium
+    priority: 65
+    polling_frequency_minutes: 720
+    config_status: not_configured
+    required_setup_actions:
+      - "Confirm current terms allow automated polling of listing pages"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: eures_portal
+    name: "EURES European job mobility portal"
+    source_type: government
+    geographic_coverage: [europe]
+    role_coverage: [general]
+    access_mode: rss_or_sitemap
+    approval_status: manual_review
+    terms_compliance_status: unclear
+    auth_required: false
+    technical_feasibility: medium
+    expected_value: medium
+    priority: 65
+    polling_frequency_minutes: 720
+    config_status: not_configured
+    required_setup_actions:
+      - "Check for an official EURES feed/API before implementing"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: canada_job_bank
+    name: "Canada Job Bank"
+    source_type: government
+    geographic_coverage: [CA]
+    role_coverage: [general]
+    access_mode: rss_or_sitemap
+    approval_status: manual_review
+    terms_compliance_status: unclear
+    auth_required: false
+    technical_feasibility: medium
+    expected_value: medium
+    priority: 65
+    polling_frequency_minutes: 720
+    config_status: not_configured
+    required_setup_actions:
+      - "Confirm Job Bank's open-data/feed terms for automated collection"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: seek_anz
+    name: "SEEK (Australia/New Zealand)"
+    source_type: job_portal
+    geographic_coverage: [AU, NZ]
+    role_coverage: [general]
+    access_mode: search_discovery
+    approval_status: manual_review
+    terms_compliance_status: unclear
+    auth_required: false
+    technical_feasibility: low
+    expected_value: medium
+    priority: 40
+    polling_frequency_minutes: 1440
+    config_status: not_configured
+    required_setup_actions:
+      - "Discovery only — do not promote to a collection access_mode without a terms review"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+
+  - source_id: workday_reverse_engineered
+    name: "(Example) Reverse-engineered Workday career-site endpoints"
+    source_type: ats_feed
+    geographic_coverage: [global]
+    role_coverage: [general]
+    access_mode: disabled
+    approval_status: blocked
+    terms_compliance_status: prohibited
+    auth_required: false
+    technical_feasibility: high
+    expected_value: high
+    priority: 0
+    polling_frequency_minutes: null
+    config_status: not_configured
+    required_setup_actions:
+      - "Do not implement — kept only as a negative example for the compliance gate"
+    adapter_ref: null
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
