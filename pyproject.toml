@@ -25,6 +25,7 @@ dev = [
     "respx>=0.21",       # HTTPX mocking for adapter tests
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -50,6 +51,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's `typer.Option(...)` as a parameter default is the framework's own
+# documented pattern, not the mutable-default-argument bug B008 flags.
+"src/job_scout/cli.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

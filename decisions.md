@@ -134,6 +134,92 @@ work (a second adapter in Milestone 2; a Postgres backend later) — that's
 the difference between a justified interface and speculative abstraction.
 Confirmed with the user on 2026-08-03 as an explicit "keep M1 small" pass.
 
+### D-013: `config/scoring_weights.yaml` added at implementation time
+**Decision**: Added `config/scoring_weights.example.yaml` (and the matching
+`config/scoring_weights.yaml` local-override slot, loaded by `config.py`)
+to hold Stage 5's eight component weights plus the Stage 2 pre-filter
+threshold. Falls back to the tracked `.example` file when no local override
+exists, following the same pattern `architecture.md` section 11 already
+defines for `execution_limits.yaml`.
+**Alternatives**: Hard-code the weights table from `architecture.md` section
+10 directly in `matching/scoring.py`.
+**Why**: Section 10 already states "Weights are config, not code
+(`config/scoring_weights.yaml` — to be added at implementation time)" — this
+file was referenced but never created. It contains no personal data (pure
+algorithm tuning, like `execution_limits.yaml`), so it gets the same
+example-fallback treatment rather than the no-fallback treatment used for
+`candidate_profile.yaml`/`search_profiles.yaml`/`source_registry.yaml`.
+Notification tier thresholds (priority/digest score cutoffs) were
+deliberately *not* added here — they already live in
+`CandidateProfile.notification_thresholds` / `SearchProfile.notification_thresholds`
+(section 2.2/2.3), so duplicating them in the weights file would create two
+sources of truth for the same value.
+
+### D-014: `config/source_scoring_weights.yaml` added at implementation time
+**Decision**: Added `config/source_scoring_weights.example.yaml` holding the
+ten source-selection factors from `architecture.md` section 6's scoring
+table, plus `neutral_prior` and `diversity_duplicate_rate_threshold`. Same
+example-fallback pattern as `execution_limits.yaml`/`scoring_weights.yaml`
+(D-013).
+**Why**: Section 6 states directly: "All weights and the neutral-prior value
+live in config (not hard-coded)." This is a distinct scoring system from
+Stage 5's job-match scoring (`scoring_weights.yaml`) — the planner uses it to
+rank *sources*, not jobs — so it gets its own file rather than overloading
+`scoring_weights.yaml` with unrelated fields.
+
+### D-015: Guardrail country truncation preserves profile order, not a
+computed score
+**Decision**: When a search profile's resolved country list exceeds
+`max_countries_per_run`, the planner keeps the first N countries in the
+order the search profile lists them, and records the rest as skipped (via a
+`diversity_notes` entry per country) — it does not attempt to re-rank
+countries by a "source-selection score."
+**Alternatives**: `architecture.md` section 11a's prose says the planner
+"truncates to the first `max_countries_per_run` countries **by
+source-selection score**." Taken literally that's underspecified —
+source-selection scores are computed per (source, country-set), not per
+individual country, so there is no single well-defined per-country score to
+sort by before any source has been evaluated.
+**Why**: The project's own more detailed planner requirements are explicit
+and unambiguous here: "Preserve the exact country priority and order defined
+in that profile" and, on hitting the limit, "process countries according to
+the configured profile priority... include all remaining countries in the
+plan... mark them as skipped." Taking "the first N countries" literally (in
+profile-listed order) satisfies both that explicit instruction and the
+literal words "first N countries" in section 11a, without inventing a
+per-country scoring scheme the schema doesn't support. Treated as a minimal
+documented correction per this session's working instructions (resolve
+ambiguity with the smallest change, log it here) rather than a redesign.
+
+### D-016: R-1 (Adzuna coverage) investigated, not resolved — example
+registry left unchanged
+**Decision**: Verified the Adzuna API's real endpoint contract during
+implementation (`GET /v1/api/jobs/{country}/search/{page}`, `app_id`/`app_key`
+query auth, `results[]` response shape with `id`/`title`/`company.display_name`/
+`location`/`redirect_url`/`created`/`description`/`salary_min`/`salary_max`/
+`contract_time`) via Adzuna's own developer docs. Country coverage itself
+could not be fully confirmed from a single authoritative source — secondary
+sources disagree on whether the API covers 12 or ~18 countries, and whether
+`IN`/`IE` specifically are included (one source lists `IN` among Adzuna's
+core countries, contradicting `source_registry.example.yaml`'s comment that
+excludes it). Left `config/source_registry.example.yaml`'s
+`geographic_coverage` list unchanged rather than editing it against
+unconfirmed secondary sources.
+**Why**: `architecture.md` R-1 already flags this as "verify against Adzuna's
+current docs at implementation time" and explicitly frames the registry's
+list as "this project's working assumption, not a verified fact" — so this
+is expected residual uncertainty, not a defect. The registry is real user
+config data the user edits themselves (`config/source_registry.yaml`, not
+committed); the example file's exact country list is illustrative, not
+load-bearing for correctness (the planner's per-source-country exclusion
+logic is what's actually under test, and it's covered regardless of which
+countries are in the fixture). The adapter itself does not hard-code or
+validate a country whitelist — it only queries whatever countries the
+planner already resolved as supported via the registry's
+`geographic_coverage`, so this uncertainty has no code-correctness impact.
+Flagging here so the user can verify their real `config/source_registry.yaml`
+against current Adzuna docs before relying on it.
+
 ### D-011: CLI ships both `run-once` and `plan` in Milestone 1
 **Decision**: Confirmed. In addition to the required `run-once` acceptance
 command, M1 includes `job-scout plan --profile X`, which prints the

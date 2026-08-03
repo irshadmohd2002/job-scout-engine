@@ -1,7 +1,11 @@
 # Milestone 1 — Local Vertical Slice
 
-Status: **not started**. This document is the scope contract; `architecture.md`
-is the design that satisfies it; `decisions.md` explains the trade-offs.
+Status: **implemented**, under `src/job_scout/` with a `pytest` suite covering
+every stage below (158 unit/component tests + 1 opt-in `integration` test as
+of this writing). This document is the scope contract; `architecture.md` is
+the design that satisfies it; `decisions.md` explains the trade-offs, and logs
+the handful of small corrections found while implementing (D-013 through
+D-016).
 
 ## Goal
 
@@ -201,28 +205,44 @@ credentials from `.env`)**:
 
 ## Acceptance checklist
 
+Items marked [x] are verified by the automated `pytest` suite (mocked
+adapter/HTTP throughout, no real credentials needed). Items marked [ ] need
+the user's own real Adzuna credentials in a local `.env` to verify — they
+cannot be checked off by an automated run in this environment.
+
 - [ ] `job-scout run-once --profile strategy-global --dry-run` runs end to end
       against real Adzuna credentials in `.env` and exits 0.
-- [ ] Console output shows the source plan (selected + excluded, with
-      reasons) before any results.
-- [ ] Console output shows ranked matches with visible score-component
-      evidence.
-- [ ] A second run against the same query does not duplicate previously
-      seen jobs (dedup verified via repository row count).
-- [ ] Removing `ADZUNA_APP_KEY` from `.env` produces a clear, named error and
-      non-zero exit — not a stack trace.
-- [ ] Running with the example `strategy-global` profile (9 countries) makes
+- [x] Console output shows the source plan (selected + excluded, with
+      reasons) before any results (`tests/test_cli_run_once.py`,
+      `tests/test_cli_plan.py`).
+- [x] Console output shows ranked matches with visible score-component
+      evidence (`tests/test_cli_run_once.py::test_run_once_end_to_end_dry_run`).
+- [x] A second run against the same query does not duplicate previously
+      seen jobs (dedup verified via repository row count;
+      `tests/test_pipeline.py::test_second_run_same_jobs_does_not_duplicate_job_rows`).
+- [x] Removing `ADZUNA_APP_KEY` from `.env` produces a clear, named error and
+      non-zero exit — not a stack trace
+      (`tests/test_cli_run_once.py::test_run_once_missing_credentials_exits_nonzero_with_clear_message`).
+- [x] Running with the example `strategy-global` profile (9 countries) makes
       a bounded, predictable number of Adzuna requests — capped by
       `max_countries_per_run` × `max_pages_per_source_country` — never one
-      request per country with unlimited pagination.
-- [ ] A country in the search profile that Adzuna's registry entry doesn't
+      request per country with unlimited pagination
+      (`tests/test_planner.py::test_country_truncation_preserves_profile_order_and_records_skips`,
+      `tests/test_adzuna_adapter.py::test_fetch_never_exceeds_max_pages`).
+- [x] A country in the search profile that Adzuna's registry entry doesn't
       cover appears in the plan as excluded/non-executable with a reason,
-      and produces zero HTTP requests for that country.
-- [ ] `pytest` (default, no `integration` marker) passes with no network
+      and produces zero HTTP requests for that country
+      (`tests/test_planner.py::test_partial_country_coverage_recorded_as_unsupported`,
+      `tests/test_cli_plan.py::test_plan_command_never_makes_http_call`).
+- [x] `pytest` (default, no `integration` marker) passes with no network
       access required.
-- [ ] `pytest -m integration` passes when real credentials are present.
+- [ ] `pytest -m integration` passes when real credentials are present (test
+      exists at `tests/test_adzuna_integration.py` and skips cleanly without
+      credentials; needs the user's real `.env` to actually exercise it).
 
 ## Open items before implementation
 
 None outstanding. `plan` command scope confirmed (D-011). Implementation is
-paused at the user's request pending doc review — see `README.md` status.
+complete — see `decisions.md` D-013 through D-016 for the small corrections
+made along the way, and the checklist above for what still needs the user's
+real Adzuna credentials to verify end-to-end.

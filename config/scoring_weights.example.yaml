@@ -1,0 +1,26 @@
+# Stage 5 deterministic scoring weights (architecture.md section 10).
+# Not personal data — pure algorithm tuning, same status as
+# execution_limits.example.yaml. Falls back to this file automatically if no
+# local config/scoring_weights.yaml override exists (see config.py).
+#
+# cp config/scoring_weights.example.yaml config/scoring_weights.yaml
+# then adjust to taste. Component weights must sum to 1.0.
+#
+# Notification tier thresholds (priority/digest score cutoffs) are NOT here —
+# they live in candidate_profile.yaml / search_profiles.yaml
+# (notification_thresholds), since they're a candidate/profile preference,
+# not a scoring-algorithm constant.
+
+title_role_family: 0.25
+responsibilities: 0.15
+required_skills: 0.20
+transferable_skills: 0.10
+seniority_experience: 0.10
+sector_relevance: 0.10
+education: 0.05
+visa_relocation: 0.05
+
+# Stage 2 pre-filter threshold (0-1 scale). Jobs scoring below this on the
+# keyword/phrase overlap pre-filter are persisted but not scored further in
+# Stage 5 (architecture.md section 10, Stage 2).
+prefilter_threshold: 0.15

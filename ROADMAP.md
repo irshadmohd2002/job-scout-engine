@@ -4,9 +4,11 @@ Milestones are sequential and each depends on the previous one being real and
 working — not aspirational. Do not start a milestone's implementation without
 explicit instruction, per project ground rules.
 
-## Milestone 1 — Local vertical slice (current)
+## Milestone 1 — Local vertical slice (implemented)
 See `MILESTONE_1.md`. One adapter (Adzuna), deterministic matching only,
-SQLite, console output, `run-once --dry-run`.
+SQLite, console output, `run-once --dry-run`. Milestone 2 has not been
+started — do not begin it without the user explicitly asking, per this
+project's ground rules.
 
 ## Milestone 2 — Broader deterministic collection
 - Priority-company watchlist (schema exists from M1; build the

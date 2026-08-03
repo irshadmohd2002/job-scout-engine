@@ -1,0 +1,28 @@
+# Source-selection scoring weights (architecture.md section 6, "Source-
+# selection scoring" table). Not personal data — pure algorithm tuning, same
+# status as execution_limits.example.yaml and scoring_weights.example.yaml.
+# Falls back to this file automatically if no local
+# config/source_scoring_weights.yaml override exists (see config.py).
+#
+# cp config/source_scoring_weights.example.yaml config/source_scoring_weights.yaml
+# then adjust to taste. The ten component weights below must sum to 1.0.
+
+country_region_relevance: 0.20
+role_family_relevance: 0.20
+sector_relevance: 0.05
+seniority_relevance: 0.05
+historical_matching_jobs: 0.10
+freshness: 0.10
+visa_international_usefulness: 0.10
+source_reliability: 0.10
+duplicate_rate_inverted: 0.05
+technical_quality: 0.05
+
+# Cold-start neutral value used for any factor with no real data yet
+# (architecture.md section 6 "Cold-start default" column).
+neutral_prior: 0.5
+
+# Diversity rule (architecture.md section 6, step 4): two sources with
+# historical duplicate_rate above this threshold against each other are
+# treated as redundant; the higher-scoring one is kept.
+diversity_duplicate_rate_threshold: 0.6

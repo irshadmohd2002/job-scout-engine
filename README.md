@@ -13,12 +13,14 @@ later milestones — notifies the user.
 
 ## Status
 
-**Architecture and planning phase.** No application code has been written
-yet. This repository currently contains the design (`architecture.md`), the
-Milestone 1 scope contract (`MILESTONE_1.md`), decision records
-(`decisions.md`), the longer-term plan (`ROADMAP.md`), and example
-configuration (`config/*.example.yaml`). Read `architecture.md` before writing
-or reviewing any code against this repo.
+**Milestone 1 implemented.** The local vertical slice described in
+`MILESTONE_1.md` is built under `src/job_scout/` with a full `pytest` suite
+(see "Testing" below). The design (`architecture.md`), scope contract
+(`MILESTONE_1.md`), decision records (`decisions.md`), longer-term plan
+(`ROADMAP.md`), and example configuration (`config/*.example.yaml`) remain
+the authoritative contract this code was built against. Read `architecture.md`
+before writing or reviewing any code against this repo. Milestone 2+ work has
+not been started — see `ROADMAP.md`.
 
 ## Documents
 
@@ -78,7 +80,7 @@ exception for `config/*.example.yaml` (so the placeholder examples stay
 tracked while your real files never do). Run `git status` after editing them
 to confirm they don't appear as trackable changes.
 
-## Quick start (once Milestone 1 is implemented)
+## Quick start
 
 ```bash
 python -m venv .venv
@@ -88,8 +90,11 @@ pip install -e ".[dev]"
 job-scout run-once --profile strategy-global --dry-run
 ```
 
-This command is not runnable yet — see "Status" above. It assumes you've
-already completed the configuration bootstrap above.
+This assumes you've already completed the configuration bootstrap above —
+including real Adzuna credentials in `.env` — since `run-once` performs real,
+permitted HTTP calls to Adzuna (see "Dry-run semantics" below). Use
+`job-scout plan --profile strategy-global` first to sanity-check source
+selection without spending API quota.
 
 ## Dry-run semantics
 
@@ -111,7 +116,7 @@ generate an uncontrolled number of requests. See `architecture.md` §11a for
 the full guardrail table and how unsupported source/country combinations are
 excluded from the plan without ever making a failing API call.
 
-## Testing (once implemented)
+## Testing
 
 ```bash
 pytest                 # default: no network, no real credentials needed

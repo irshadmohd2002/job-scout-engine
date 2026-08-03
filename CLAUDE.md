@@ -80,11 +80,12 @@ commands. Short version: real config is `config/candidate_profile.yaml`,
 `config/execution_limits.yaml`, and `.env` — all copied from their
 `.example` counterparts, all gitignored, none ever committed.
 
-## Where things live (once M1 code exists)
+## Where things live
 
-See `architecture.md` §12 for the full proposed module layout under
-`src/job_scout/`. As of this writing, no application code has been written
-yet — only architecture/planning/config-foundation files.
+See `architecture.md` §12 for the full module layout under `src/job_scout/`,
+implemented as described there (Milestone 1 is complete; see
+`MILESTONE_1.md` status and `decisions.md` D-013 through D-016 for the small
+corrections found along the way).
 
 ## Before implementing beyond Milestone 1
 

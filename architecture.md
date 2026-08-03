@@ -1,8 +1,9 @@
 # Job Scout Engine — Architecture
 
-Status: **pre-implementation design**. This document is the contract that Milestone 1
-code must satisfy. See `MILESTONE_1.md` for scope and acceptance criteria, and
-`decisions.md` for the reasoning behind choices made here.
+Status: **Milestone 1 implemented** against this contract (see `MILESTONE_1.md`
+for scope/acceptance criteria and `decisions.md` for the reasoning behind
+choices made here, including D-013 through D-016 covering the small
+corrections/additions found during implementation).
 
 ## 1. System shape
 
@@ -634,8 +635,12 @@ src/job_scout/
 └── cli.py                                # Typer app: run-once, plan
 ```
 
-This is the structure proposed for implementation; it is not yet created
-(Milestone 1 has not started — see `MILESTONE_1.md`).
+This structure is implemented as proposed, with two additions:
+`source_intelligence/registry.py` re-exposes `config.py`'s registry loader
+plus a small `index_by_id` helper (registry-specific structuring, not
+duplicate YAML parsing — see the module's own docstring), and `config.py`
+also owns `ScoringWeights`/`SourceScoringWeights` (the section 10/6 weight
+tables — see decisions.md D-013/D-014).
 
 ### Why `models.py` is one file, not a package
 
