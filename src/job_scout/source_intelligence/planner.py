@@ -88,11 +88,26 @@ def _region_coverage_map(countries: list[str]) -> dict[str, list[str]]:
     return dict(sorted(mapping.items()))
 
 
+def _coverage_raw(source_coverage: list[str], requested: list[str], neutral_prior: float) -> float:
+    """Milestone 1.1 (architecture.md section 15.7; decisions.md D-024):
+    empty source_coverage = unrestricted (relevant regardless); empty
+    requested = no profile data to evaluate against, so neutral_prior;
+    otherwise the fraction of requested tags the source's coverage covers."""
+    if not source_coverage:
+        return 1.0
+    if not requested:
+        return neutral_prior
+    overlap = set(source_coverage) & set(requested)
+    return len(overlap) / len(requested)
+
+
 def _factor_raw_values(
     entry: SourceRegistryEntry,
     supported: list[str],
     selected_countries: list[str],
     role_families: list[str],
+    candidate_profile: CandidateProfile,
+    search_profile: SearchProfile,
     weights: SourceScoringWeights,
 ) -> dict[str, float]:
     country_raw = (
@@ -106,6 +121,28 @@ def _factor_raw_values(
         role_raw = len(role_cov & set(role_families)) / len(role_families)
     else:
         role_raw = weights.neutral_prior
+
+    # Milestone 1.1: industry+sector relevance are blended into the single
+    # sector_relevance factor rather than adding a new weighted dimension
+    # (decisions.md D-024) — both fall back to neutral_prior individually
+    # when their own profile data is absent.
+    requested_sectors = sorted({*search_profile.included_sectors, *candidate_profile.sectors})
+    requested_industries = sorted(
+        {*search_profile.included_industries, *candidate_profile.industries}
+    )
+    sector_raw = _coverage_raw(entry.sector_coverage, requested_sectors, weights.neutral_prior)
+    industry_raw = _coverage_raw(
+        entry.industry_coverage, requested_industries, weights.neutral_prior
+    )
+    blended_sector_raw = (sector_raw + industry_raw) / 2
+
+    requested_seniority = list(search_profile.seniority_levels)
+    candidate_seniority = candidate_profile.effective_seniority_text()
+    if candidate_seniority:
+        requested_seniority.append(candidate_seniority)
+    seniority_raw = _coverage_raw(
+        entry.seniority_coverage, requested_seniority, weights.neutral_prior
+    )
 
     if entry.historical_match_count is None:
         historical_raw = weights.neutral_prior
@@ -128,8 +165,8 @@ def _factor_raw_values(
     return {
         "country_region_relevance": country_raw,
         "role_family_relevance": role_raw,
-        "sector_relevance": weights.neutral_prior,
-        "seniority_relevance": weights.neutral_prior,
+        "sector_relevance": blended_sector_raw,
+        "seniority_relevance": seniority_raw,
         "historical_matching_jobs": historical_raw,
         "freshness": weights.neutral_prior,
         "visa_international_usefulness": visa_raw,
@@ -144,9 +181,19 @@ def _score_source(
     supported: list[str],
     selected_countries: list[str],
     role_families: list[str],
+    candidate_profile: CandidateProfile,
+    search_profile: SearchProfile,
     weights: SourceScoringWeights,
 ) -> tuple[float, dict[str, float]]:
-    raws = _factor_raw_values(entry, supported, selected_countries, role_families, weights)
+    raws = _factor_raw_values(
+        entry,
+        supported,
+        selected_countries,
+        role_families,
+        candidate_profile,
+        search_profile,
+        weights,
+    )
     weight_map = weights.component_weights()
     breakdown = {factor: raws[factor] * weight_map[factor] for factor in raws}
     return sum(breakdown.values()), breakdown
@@ -263,6 +310,8 @@ def build_plan(
             supported_map[entry.source_id],
             selected_countries,
             role_families,
+            candidate_profile,
+            search_profile,
             source_scoring_weights,
         )
         score_map[entry.source_id] = score

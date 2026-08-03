@@ -1,10 +1,11 @@
 # Stage 5 deterministic scoring weights (architecture.md section 10).
 # Not personal data — pure algorithm tuning, same status as
-# execution_limits.example.yaml. Falls back to this file automatically if no
-# local config/scoring_weights.yaml override exists (see config.py).
+# execution_limits.yaml. `config.load_scoring_weights()` falls back to this
+# packaged template automatically if no local scoring_weights.yaml override
+# exists (architecture.md section 15.2; decisions.md D-021).
 #
-# cp config/scoring_weights.example.yaml config/scoring_weights.yaml
-# then adjust to taste. Component weights must sum to 1.0.
+# `job-scout init` copies this template to scoring_weights.yaml in your own
+# per-user data directory; adjust to taste. Component weights must sum to 1.0.
 #
 # Notification tier thresholds (priority/digest score cutoffs) are NOT here —
 # they live in candidate_profile.yaml / search_profiles.yaml

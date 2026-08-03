@@ -7,6 +7,16 @@ the design that satisfies it; `decisions.md` explains the trade-offs, and logs
 the handful of small corrections found while implementing (D-013 through
 D-016).
 
+Milestone 1.1 (`MILESTONE_1_1.md`) has since been implemented on top of this
+milestone without changing any of the acceptance criteria below — it made
+the engine profession-agnostic and locally distributable. The one place this
+document's original text is now stale is "Configuration required before
+running" immediately below: `config/*.example.yaml` no longer exists as a
+tracked file (see `decisions.md` D-021) — starter config is created by
+`job-scout init` instead, from packaged templates. Everything else on this
+page (acceptance command, dry-run semantics, guardrails, scope, test plan)
+is unchanged.
+
 ## Goal
 
 One command, run locally, that goes from YAML config to ranked, deduplicated,
@@ -16,13 +26,14 @@ disabled under `--dry-run` (see "Dry-run semantics" below).
 
 ## Configuration required before running
 
-The acceptance command reads real, local, gitignored config — never the
-tracked `.example.yaml` files directly. See README.md "Configuration
-bootstrap and privacy" for the exact commands. In short:
-`config/candidate_profile.yaml`, `config/search_profiles.yaml`,
-`config/source_registry.yaml`, `config/execution_limits.yaml`, and `.env`
-must all exist locally (copied from their `.example` counterparts and
-edited) and must never be committed.
+The acceptance command reads your real, local config from your own per-user
+data directory — never the packaged templates directly. See README.md
+"Installing and configuring" for the exact steps: run `job-scout init`
+(optionally `--data-dir <path>`) to create starter `candidate_profile.yaml`,
+`search_profiles.yaml`, `source_registry.yaml`, and `execution_limits.yaml`
+in that directory, then edit them and supply your own `.env`/credentials
+separately. None of this is ever committed to this repository
+(architecture.md section 15; decisions.md D-018 through D-021).
 
 ## Acceptance command
 
@@ -84,7 +95,7 @@ result in an API call.
 - `CandidateProfile` / `SearchProfile` YAML schema + loader + validation.
 - `SourceRegistryEntry` schema + example registry YAML covering every
   `AccessMode`/`ApprovalStatus` combination (not every real source — see
-  `config/source_registry.example.yaml`).
+  `src/job_scout/resources/templates/source_registry.example.yaml`).
 - Country → region resolution (static lookup).
 - Deterministic source planning (`SearchExecutionPlan`) with transparent
   scoring and inclusion/exclusion reasons.

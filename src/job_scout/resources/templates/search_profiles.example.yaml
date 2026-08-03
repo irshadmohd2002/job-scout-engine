@@ -1,0 +1,97 @@
+# Search profiles narrow a candidate profile into a concrete, runnable
+# search. `job-scout run-once --profile <profile_id>` looks up the profile
+# by id below.
+#
+# THIS IS A GENERIC, PACKAGED TEMPLATE — not written for any one profession.
+# `job-scout init` copies this template to search_profiles.yaml in your own
+# per-user data directory. Edit that copy, not this template.
+#
+# API quota/execution guardrails (max countries per run, pages per source,
+# timeouts, retries, etc.) are NOT set here — they live in
+# execution_limits.yaml as engine-level config, deliberately separate so a
+# broad profile below can never raise its own safety ceiling. See
+# architecture.md section 11a.
+
+profiles:
+  - profile_id: example-profile
+    candidate_profile_ref: default-candidate
+    description: >
+      Example search profile — edit or replace with your own. Demonstrates
+      every field the matching pipeline understands.
+
+    included_countries: [GB] # ISO 3166-1 alpha-2 codes
+    excluded_countries: []
+    included_cities: []
+    excluded_cities: []
+
+    role_families: [] # empty = inherit all from candidate profile
+    target_titles: []
+    title_aliases: [] # empty = inherit candidate profile's title_aliases
+
+    employment_types: [full_time]
+    min_experience_years: 2
+    max_experience_years: 10
+
+    # Unconditional (Milestone 1 behaviour, unchanged): a job missing any of
+    # these is rejected outright whenever the list is non-empty.
+    required_languages: []
+    mandatory_qualifications: []
+
+    preferred_languages: []
+
+    # Milestone 1.1 generic fields below only reject a job when their
+    # matching hard_filters toggle (bottom of this profile) is explicitly
+    # true — see architecture.md section 15.5 and decisions.md D-025.
+    required_skills: []
+    preferred_skills: []
+    transferable_skills: []
+
+    included_industries: []
+    excluded_industries: []
+    included_sectors: []
+    excluded_sectors: []
+
+    required_qualifications: []
+    preferred_qualifications: []
+    required_certifications: []
+    preferred_certifications: []
+    required_licences: []
+    preferred_licences: []
+
+    seniority_levels: [] # free-text tags, e.g. ["senior", "lead"]
+    work_arrangements: [] # e.g. ["remote", "hybrid", "onsite"]
+
+    minimum_salary: null
+    minimum_salary_currency: null
+
+    visa_relocation_requirements: []
+    included_keywords: []
+    excluded_keywords: []
+
+    security_clearance_allowed: false
+
+    # Hard-filter behaviour (Stage 1) — see architecture.md.
+    reject_on_explicit_no_sponsorship: true
+
+    # Every field above from required_skills through excluded_keywords /
+    # minimum_salary only rejects a job when its matching toggle here is
+    # explicitly true. All default to false — turn on only what you want to
+    # be a hard requirement rather than a scoring signal.
+    hard_filters:
+      enforce_required_skills: false
+      enforce_required_qualifications: false
+      enforce_required_certifications: false
+      enforce_required_licences: false
+      enforce_included_industries: false
+      enforce_excluded_industries: false
+      enforce_included_sectors: false
+      enforce_excluded_sectors: false
+      enforce_included_keywords: false
+      enforce_excluded_keywords: false
+      enforce_minimum_salary: false
+
+    notification_thresholds:
+      priority_score: 85
+      digest_score: 70
+
+    polling_frequency_minutes: 720

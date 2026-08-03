@@ -6,6 +6,15 @@ environment configuration. All errors raise ConfigError, which the CLI
 catches to exit cleanly with a concise, actionable message — never a
 traceback, never a secret value (architecture.md section 12 module layout;
 CLAUDE.md "Configuration requirements").
+
+Milestone 1.1 (architecture.md section 15): default paths for every config
+file now resolve via `paths.resolve_app_paths()` (platformdirs-based, not
+CWD-relative — decisions.md D-018) instead of a hard-coded `config/*.yaml`
+path. `execution_limits`/`scoring_weights`/`source_scoring_weights` keep
+their Milestone 1 "fall back to a generic default when no local override
+exists" behaviour, but the fallback now reads the packaged template
+(`job_scout.resources`) instead of a CWD-relative `config/*.example.yaml`
+file — decisions.md D-021.
 """
 
 from __future__ import annotations
@@ -19,25 +28,15 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ValidationError, field_validator
 
 from job_scout.models import CandidateProfile, SearchProfile, SourceRegistryEntry
-
-DEFAULT_CANDIDATE_PROFILE_PATH = Path("config/candidate_profile.yaml")
-DEFAULT_SEARCH_PROFILES_PATH = Path("config/search_profiles.yaml")
-DEFAULT_SOURCE_REGISTRY_PATH = Path("config/source_registry.yaml")
-
-DEFAULT_EXECUTION_LIMITS_PATH = Path("config/execution_limits.yaml")
-EXAMPLE_EXECUTION_LIMITS_PATH = Path("config/execution_limits.example.yaml")
-
-DEFAULT_SCORING_WEIGHTS_PATH = Path("config/scoring_weights.yaml")
-EXAMPLE_SCORING_WEIGHTS_PATH = Path("config/scoring_weights.example.yaml")
-
-DEFAULT_SOURCE_SCORING_WEIGHTS_PATH = Path("config/source_scoring_weights.yaml")
-EXAMPLE_SOURCE_SCORING_WEIGHTS_PATH = Path("config/source_scoring_weights.example.yaml")
+from job_scout.paths import resolve_app_paths
+from job_scout.resources import template_text
 
 DEFAULT_ENV_PATH = Path(".env")
 
 BOOTSTRAP_HINT = (
-    "Copy the matching config/*.example.yaml to the real filename and edit it "
-    "with your own details — see README.md 'Configuration bootstrap and privacy'."
+    "Run 'job-scout init' (optionally with --data-dir) to create starter config "
+    "files, then edit them with your own details — see README.md 'Configuration "
+    "bootstrap and privacy'."
 )
 
 
@@ -59,7 +58,7 @@ class ConfigError(Exception):
         super().__init__(" | ".join(parts))
 
     @classmethod
-    def from_validation_error(cls, file: Path, exc: ValidationError) -> ConfigError:
+    def from_validation_error(cls, file: Path | str, exc: ValidationError) -> ConfigError:
         lines = []
         for err in exc.errors():
             loc = ".".join(str(part) for part in err["loc"]) or "<root>"
@@ -80,26 +79,32 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"Could not read configuration file: {exc}", file=path) from exc
+    return _parse_yaml_mapping(raw, path)
+
+
+def _parse_yaml_mapping(raw: str, file: Path | str) -> dict[str, Any]:
     try:
         data = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
-        raise ConfigError(f"Malformed YAML: {exc}", file=path) from exc
+        raise ConfigError(f"Malformed YAML: {exc}", file=file) from exc
     if data is None:
-        raise ConfigError("Configuration file is empty.", file=path)
+        raise ConfigError("Configuration file is empty.", file=file)
     if not isinstance(data, dict):
         raise ConfigError(
-            "Configuration file must contain a YAML mapping at the top level.", file=path
+            "Configuration file must contain a YAML mapping at the top level.", file=file
         )
     return data
 
 
-def _resolve_with_fallback(
-    explicit_path: Path | None, default_path: Path, example_path: Path
-) -> Path:
-    """Resolve a config path that has a tracked .example fallback (currently
-    execution_limits and scoring_weights — see architecture.md section 11 for
-    the documented execution_limits case; scoring_weights follows the same
-    pattern, see decisions.md).
+def _load_with_template_fallback(
+    explicit_path: Path | None, default_path: Path, template_name: str
+) -> tuple[dict[str, Any], Path | str]:
+    """Resolve a config file that has a generic packaged-template fallback
+    (execution_limits/scoring_weights/source_scoring_weights — decisions.md
+    D-013/D-014/D-021): explicit path > AppPaths-resolved default path >
+    the packaged template, read directly from package data (no filesystem
+    path required, so this works identically for an installed package with
+    no local override at all).
 
     An explicitly-provided path must exist; it is never silently substituted.
     """
@@ -108,22 +113,24 @@ def _resolve_with_fallback(
             raise ConfigError.missing_file(
                 explicit_path, hint="No fallback applies to an explicitly given path."
             )
-        return explicit_path
+        return _read_yaml(explicit_path), explicit_path
     if default_path.exists():
-        return default_path
-    if example_path.exists():
-        return example_path
-    raise ConfigError.missing_file(default_path)
+        return _read_yaml(default_path), default_path
+    label = f"<packaged template: {template_name}>"
+    return _parse_yaml_mapping(template_text(template_name), label), label
 
 
 # --- CandidateProfile / SearchProfile / SourceRegistry ----------------------
 # These carry (or, for source registry, gate access to) real candidate data
-# and have no automatic fallback to the placeholder .example file — the user
-# must explicitly bootstrap them (README.md "Configuration bootstrap").
+# and have no automatic fallback to a generic template — the user must
+# explicitly bootstrap them via `job-scout init` (README.md "Configuration
+# bootstrap").
 
 
-def load_candidate_profile(path: Path | None = None) -> CandidateProfile:
-    resolved = path or DEFAULT_CANDIDATE_PROFILE_PATH
+def load_candidate_profile(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> CandidateProfile:
+    resolved = path or resolve_app_paths(data_dir_override=data_dir).candidate_profile_path
     data = _read_yaml(resolved)
     try:
         return CandidateProfile.model_validate(data)
@@ -135,8 +142,10 @@ class _SearchProfilesFile(BaseModel):
     profiles: list[SearchProfile]
 
 
-def load_search_profiles(path: Path | None = None) -> dict[str, SearchProfile]:
-    resolved = path or DEFAULT_SEARCH_PROFILES_PATH
+def load_search_profiles(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> dict[str, SearchProfile]:
+    resolved = path or resolve_app_paths(data_dir_override=data_dir).search_profiles_path
     data = _read_yaml(resolved)
     try:
         parsed = _SearchProfilesFile.model_validate(data)
@@ -172,8 +181,10 @@ class _SourceRegistryFile(BaseModel):
     sources: list[SourceRegistryEntry]
 
 
-def load_source_registry(path: Path | None = None) -> list[SourceRegistryEntry]:
-    resolved = path or DEFAULT_SOURCE_REGISTRY_PATH
+def load_source_registry(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> list[SourceRegistryEntry]:
+    resolved = path or resolve_app_paths(data_dir_override=data_dir).source_registry_path
     data = _read_yaml(resolved)
     try:
         parsed = _SourceRegistryFile.model_validate(data)
@@ -229,15 +240,17 @@ class ExecutionLimits(BaseModel):
         return value
 
 
-def load_execution_limits(path: Path | None = None) -> ExecutionLimits:
-    resolved = _resolve_with_fallback(
-        path, DEFAULT_EXECUTION_LIMITS_PATH, EXAMPLE_EXECUTION_LIMITS_PATH
+def load_execution_limits(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> ExecutionLimits:
+    default_path = resolve_app_paths(data_dir_override=data_dir).execution_limits_path
+    data, label = _load_with_template_fallback(
+        path, default_path, "execution_limits.example.yaml"
     )
-    data = _read_yaml(resolved)
     try:
         return ExecutionLimits.model_validate(data)
     except ValidationError as exc:
-        raise ConfigError.from_validation_error(resolved, exc) from exc
+        raise ConfigError.from_validation_error(label, exc) from exc
 
 
 # --- ScoringWeights -------------------------------------------------------
@@ -293,20 +306,20 @@ class ScoringWeights(BaseModel):
         }
 
 
-def load_scoring_weights(path: Path | None = None) -> ScoringWeights:
-    resolved = _resolve_with_fallback(
-        path, DEFAULT_SCORING_WEIGHTS_PATH, EXAMPLE_SCORING_WEIGHTS_PATH
-    )
-    data = _read_yaml(resolved)
+def load_scoring_weights(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> ScoringWeights:
+    default_path = resolve_app_paths(data_dir_override=data_dir).scoring_weights_path
+    data, label = _load_with_template_fallback(path, default_path, "scoring_weights.example.yaml")
     try:
         weights = ScoringWeights.model_validate(data)
     except ValidationError as exc:
-        raise ConfigError.from_validation_error(resolved, exc) from exc
+        raise ConfigError.from_validation_error(label, exc) from exc
     total = sum(weights.component_weights().values())
     if abs(total - 1.0) > 1e-6:
         raise ConfigError(
             f"Score component weights must sum to 1.0, got {total:.4f}.",
-            file=resolved,
+            file=label,
             field="(title_role_family + responsibilities + ... + visa_relocation)",
         )
     return weights
@@ -376,20 +389,22 @@ class SourceScoringWeights(BaseModel):
         }
 
 
-def load_source_scoring_weights(path: Path | None = None) -> SourceScoringWeights:
-    resolved = _resolve_with_fallback(
-        path, DEFAULT_SOURCE_SCORING_WEIGHTS_PATH, EXAMPLE_SOURCE_SCORING_WEIGHTS_PATH
+def load_source_scoring_weights(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> SourceScoringWeights:
+    default_path = resolve_app_paths(data_dir_override=data_dir).source_scoring_weights_path
+    data, label = _load_with_template_fallback(
+        path, default_path, "source_scoring_weights.example.yaml"
     )
-    data = _read_yaml(resolved)
     try:
         weights = SourceScoringWeights.model_validate(data)
     except ValidationError as exc:
-        raise ConfigError.from_validation_error(resolved, exc) from exc
+        raise ConfigError.from_validation_error(label, exc) from exc
     total = sum(weights.component_weights().values())
     if abs(total - 1.0) > 1e-6:
         raise ConfigError(
             f"Source-selection score component weights must sum to 1.0, got {total:.4f}.",
-            file=resolved,
+            file=label,
             field="(country_region_relevance + ... + technical_quality)",
         )
     return weights
@@ -407,14 +422,32 @@ class EnvConfig(BaseModel):
     log_level: str = "INFO"
 
 
-def load_env(path: Path | None = None) -> EnvConfig:
+def load_env(path: Path | None = None, *, data_dir: Path | None = None) -> EnvConfig:
     """Load .env (if present) into the process environment without
     overriding already-set real environment variables, then build a typed
-    EnvConfig. Never logs or echoes values."""
-    resolved = path or DEFAULT_ENV_PATH
-    file_values: dict[str, str | None] = {}
+    EnvConfig. Never logs or echoes values.
+
+    Resolution order for the .env file itself (architecture.md section 15.4):
+    an explicit `path` argument > `AppPaths.environment_file_path` (the
+    resolved data directory's `.env`) if it exists > a `.env` in the current
+    working directory if it exists (retained only as a documented
+    development convenience — never the primary default, decisions.md
+    D-018). `db_path`'s own default (when JOB_SCOUT_DB_PATH is unset) is
+    `AppPaths.database_path`, not a CWD-relative path.
+    """
+    app_paths = resolve_app_paths(data_dir_override=data_dir)
+
+    if path is not None:
+        resolved = path
+    elif app_paths.environment_file_path is not None and app_paths.environment_file_path.exists():
+        resolved = app_paths.environment_file_path
+    elif DEFAULT_ENV_PATH.exists():
+        resolved = DEFAULT_ENV_PATH
+    else:
+        resolved = DEFAULT_ENV_PATH  # doesn't exist; the load step below is a no-op
+
     if resolved.exists():
-        file_values = dotenv_values(resolved)
+        file_values: dict[str, str | None] = dotenv_values(resolved)
         for key, value in file_values.items():
             if value is not None and key not in os.environ:
                 os.environ[key] = value
@@ -423,6 +456,6 @@ def load_env(path: Path | None = None) -> EnvConfig:
         adzuna_app_key=os.environ.get("ADZUNA_APP_KEY") or None,
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         anthropic_model=os.environ.get("ANTHROPIC_MODEL") or None,
-        db_path=os.environ.get("JOB_SCOUT_DB_PATH") or "./data/job_scout.sqlite3",
+        db_path=os.environ.get("JOB_SCOUT_DB_PATH") or str(app_paths.database_path),
         log_level=os.environ.get("LOG_LEVEL") or "INFO",
     )

@@ -4,13 +4,16 @@ Guidance for Claude Code sessions working in this repository.
 
 ## What this project is
 
-Job Scout Engine: a deterministic job-monitoring and matching engine (optional
-LLM enrichment only) for a management-consultant candidate seeking
-international strategy/transformation/chief-of-staff/program-management roles.
-Read `architecture.md` first — it is the design contract. `MILESTONE_1.md`
-defines current scope; `decisions.md` explains why non-obvious choices were
-made; `ROADMAP.md` shows what comes after and, just as importantly, what
-doesn't happen yet.
+Job Scout Engine: a deterministic, profession-agnostic job-monitoring and
+matching engine (optional LLM enrichment only), locally installable so any
+job seeker can configure it for their own profession, skills, and
+experience. The originally-built example profile (international
+strategy/transformation/chief-of-staff/program-management roles) is one
+configuration of the engine, not the engine's scope — see `decisions.md`
+D-017. Read `architecture.md` first — it is the design contract.
+`MILESTONE_1.md` and `MILESTONE_1_1.md` define current scope; `decisions.md`
+explains why non-obvious choices were made; `ROADMAP.md` shows what comes
+after and, just as importantly, what doesn't happen yet.
 
 ## Hard constraints — do not violate these
 
@@ -35,24 +38,34 @@ doesn't happen yet.
 6. **Don't hard-code a single global source list.** Source selection goes
    through the registry + planner; a role/region should never silently assume
    one fixed set of sources.
-7. **Stay within the current milestone.** Check `MILESTONE_1.md`'s "in scope"
-   / "explicitly out of scope" lists before adding anything — this project
-   has a documented tendency to over-scope (see the original requirements'
-   own regional-source breadth), and the milestone boundary is intentional.
-   Don't start Milestone 2+ work without the user explicitly asking.
-8. **Never put real personal data into a tracked file.** Every
-   `config/*.example.yaml` must stay a generic placeholder — no real
-   employer names, schools, or biographical details. The user's real profile
-   lives only in `config/candidate_profile.yaml` (and the other non-`.example`
-   config files), which are gitignored and must never be committed. Don't
-   create the user's real `config/candidate_profile.yaml` unless explicitly
-   asked to.
+7. **Stay within the current milestone.** Check `MILESTONE_1.md`'s and
+   `MILESTONE_1_1.md`'s "in scope" / "explicitly out of scope" lists before
+   adding anything — this project has a documented tendency to over-scope
+   (see the original requirements' own regional-source breadth), and the
+   milestone boundary is intentional. Don't start Milestone 2+ work without
+   the user explicitly asking.
+8. **Never put real personal data into a tracked file.** The packaged
+   templates under `src/job_scout/resources/templates/` (and, historically,
+   `config/*.example.yaml` — see `decisions.md` D-021) must stay generic
+   placeholders — no real employer names, schools, or biographical details.
+   The user's real profile lives only in their own data-directory config
+   (created by `job-scout init`, gitignored, never inside this repo) and
+   must never be committed. Don't create the user's real
+   `config/candidate_profile.yaml` unless explicitly asked to.
 9. **Keep Milestone 1 small.** No dependency-injection container, abstract
    factory, plugin-loading mechanism, event bus, migration framework,
    Postgres implementation, unnecessary async, or deep inheritance hierarchy —
    see `architecture.md` §12 ("What Milestone 1 deliberately does not add")
    and `decisions.md` D-012. `SourceAdapter` and `JobRepository` are the only
    interfaces; everything else is plain functions and flat typed models.
+   Milestone 1.1 keeps the same discipline for its own additions — see
+   `decisions.md` D-020 ("distribution foundations, not an installer") and
+   the explicit exclusion list in `MILESTONE_1_1.md`.
+10. **The engine stays profession-agnostic.** No profession-specific title,
+    skill, role family, industry, or scoring keyword may be hard-coded in
+    `src/job_scout/` — it belongs in `CandidateProfile`/`SearchProfile`/
+    `SourceRegistryEntry` config instead, and no profession gets its own
+    Python subclass. See `decisions.md` D-017.
 
 ## Working conventions
 
@@ -74,19 +87,26 @@ doesn't happen yet.
 
 ## Configuration bootstrap
 
-See README.md "Configuration bootstrap and privacy" for the exact `cp`
-commands. Short version: real config is `config/candidate_profile.yaml`,
-`config/search_profiles.yaml`, `config/source_registry.yaml`,
-`config/execution_limits.yaml`, and `.env` — all copied from their
-`.example` counterparts, all gitignored, none ever committed.
+See README.md "Configuration bootstrap and privacy" for the full
+explanation. Short version: run `job-scout init` (optionally
+`--data-dir <path>`) to create starter config files in your own per-user
+data directory (`src/job_scout/paths.py::AppPaths`, resolved via
+`platformdirs`), then edit them and supply your own credentials via a real
+`.env` or real environment variables — nothing is ever copied from or
+written back into this repository. `config/*.example.yaml` no longer exists
+(`decisions.md` D-021); the canonical templates live at
+`src/job_scout/resources/templates/`.
 
 ## Where things live
 
 See `architecture.md` §12 for the full module layout under `src/job_scout/`,
 implemented as described there (Milestone 1 is complete; see
 `MILESTONE_1.md` status and `decisions.md` D-013 through D-016 for the small
-corrections found along the way).
+corrections found along the way; Milestone 1.1 is complete — see
+`MILESTONE_1_1.md` and `decisions.md` D-017 through D-026 for its additions,
+including `paths.py` (`AppPaths`), `resources/` (packaged templates), and
+`bootstrap.py` (`job-scout init`)).
 
-## Before implementing beyond Milestone 1
+## Before implementing beyond Milestone 1.1
 
 Don't. Check `ROADMAP.md` and ask the user first.

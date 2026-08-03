@@ -6,9 +6,17 @@ explicit instruction, per project ground rules.
 
 ## Milestone 1 — Local vertical slice (implemented)
 See `MILESTONE_1.md`. One adapter (Adzuna), deterministic matching only,
-SQLite, console output, `run-once --dry-run`. Milestone 2 has not been
-started — do not begin it without the user explicitly asking, per this
-project's ground rules.
+SQLite, console output, `run-once --dry-run`.
+
+## Milestone 1.1 — Profession-agnostic and locally distributable foundations (implemented)
+See `MILESTONE_1_1.md`. Removes the remaining profession-specific hard-coding
+(fixed education-scoring keywords, a consulting-ladder-only seniority enum)
+and the remaining repo/CWD lock-in (config, database, and template defaults
+now resolve through `AppPaths`/`platformdirs` and `job-scout init`, not a
+path relative to the current working directory). Still local, single-user,
+CLI-based, config-driven, synchronous — no new source, no notification
+channel, no scheduler. Milestone 2 has not been started — do not begin it
+without the user explicitly asking, per this project's ground rules.
 
 ## Milestone 2 — Broader deterministic collection
 - Priority-company watchlist (schema exists from M1; build the

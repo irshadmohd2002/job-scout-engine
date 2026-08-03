@@ -48,8 +48,10 @@ def run_prefilter(
     primary_matches = keyword_overlap(candidate.primary_skills, combined_text)
     secondary_matches = keyword_overlap(candidate.secondary_skills, combined_text)
 
-    seniority_term = candidate.seniority_level.value.replace("_", " ")
-    seniority_matched = seniority_term in combined_text.lower()
+    seniority_term = candidate.effective_seniority_text()
+    seniority_matched = seniority_term is not None and (
+        seniority_term.lower() in combined_text.lower()
+    )
 
     score = (
         _TITLE_WEIGHT * _ratio(title_matches, candidate.title_aliases)

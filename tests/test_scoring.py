@@ -77,13 +77,32 @@ def test_education_component_neutral_when_no_requirement_stated() -> None:
     assert education.raw_value == 0.5
 
 
-def test_education_component_positive_when_mba_mentioned() -> None:
+def test_education_component_mba_has_no_special_value_unless_in_profile() -> None:
+    """Milestone 1.1 (decisions.md D-017): there is no universal/hard-coded
+    education keyword list any more. A default candidate profile (no
+    education/qualifications/certifications/licences configured) must not
+    treat "MBA" as special just because it's a common credential."""
     candidate = make_candidate_profile()
     search = make_search_profile()
     job = make_job(description_text="MBA required for this role.")
     components = compute_score_components(job, candidate, search, _weights())
     education = next(c for c in components if c.name == "education")
+    assert education.raw_value == 0.5
+    assert education.evidence == []
+
+
+def test_education_component_positive_when_candidates_own_qualification_mentioned() -> None:
+    from job_scout.models import Education
+
+    candidate = make_candidate_profile(
+        education=[Education(level="postgraduate", degree="MBA", field="General Management")]
+    )
+    search = make_search_profile()
+    job = make_job(description_text="MBA required for this role.")
+    components = compute_score_components(job, candidate, search, _weights())
+    education = next(c for c in components if c.name == "education")
     assert education.raw_value == 1.0
+    assert "education_match:MBA" in education.evidence
 
 
 def test_visa_relocation_component_positive_negative_unknown() -> None:

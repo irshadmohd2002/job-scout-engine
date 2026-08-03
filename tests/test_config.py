@@ -137,10 +137,11 @@ max_jobs_processed_per_run: null
         config.load_execution_limits(p)
 
 
-def test_execution_limits_falls_back_to_example() -> None:
-    # config/execution_limits.yaml is gitignored/absent in a fresh checkout;
-    # the loader must fall back to the tracked .example file.
-    limits = config.load_execution_limits()
+def test_execution_limits_falls_back_to_packaged_template(tmp_path: Path) -> None:
+    # No local override anywhere under the (isolated, empty) data directory;
+    # the loader must fall back to the packaged template
+    # (job_scout.resources), not a CWD-relative file (decisions.md D-021).
+    limits = config.load_execution_limits(data_dir=tmp_path / "empty-data-dir")
     assert limits.max_countries_per_run > 0
 
 
@@ -164,9 +165,62 @@ prefilter_threshold: 0.15
         config.load_scoring_weights(p)
 
 
-def test_scoring_weights_falls_back_to_example() -> None:
-    weights = config.load_scoring_weights()
+def test_scoring_weights_falls_back_to_packaged_template(tmp_path: Path) -> None:
+    weights = config.load_scoring_weights(data_dir=tmp_path / "empty-data-dir")
     assert abs(sum(weights.component_weights().values()) - 1.0) < 1e-6
+
+
+def test_source_scoring_weights_falls_back_to_packaged_template(tmp_path: Path) -> None:
+    weights = config.load_source_scoring_weights(data_dir=tmp_path / "empty-data-dir")
+    assert abs(sum(weights.component_weights().values()) - 1.0) < 1e-6
+
+
+def test_explicit_path_wins_over_data_dir(tmp_path: Path) -> None:
+    """Priority: an explicit path argument always wins over --data-dir /
+    JOB_SCOUT_DATA_DIR / platformdirs (architecture.md section 15.1)."""
+    data_dir = tmp_path / "data-dir"
+    data_dir_config = data_dir / "config" / "execution_limits.yaml"
+    data_dir_config.parent.mkdir(parents=True)
+    data_dir_config.write_text(
+        "max_countries_per_run: 2\nmax_pages_per_source_country: 1\n"
+        "results_per_page: 10\nrequest_timeout_seconds: 5\nmax_retries: 1\n"
+        "max_jobs_processed_per_run: null\n",
+        encoding="utf-8",
+    )
+    explicit = tmp_path / "explicit-execution-limits.yaml"
+    explicit.write_text(
+        "max_countries_per_run: 9\nmax_pages_per_source_country: 1\n"
+        "results_per_page: 10\nrequest_timeout_seconds: 5\nmax_retries: 1\n"
+        "max_jobs_processed_per_run: null\n",
+        encoding="utf-8",
+    )
+    limits = config.load_execution_limits(explicit, data_dir=data_dir)
+    assert limits.max_countries_per_run == 9  # explicit path, not the data_dir one
+
+
+def test_data_dir_resolves_candidate_profile_default(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "candidate_profile.yaml").write_text(VALID_CANDIDATE_YAML, encoding="utf-8")
+    profile = config.load_candidate_profile(data_dir=tmp_path)
+    assert profile.candidate_id == "default-candidate"
+
+
+def test_config_loading_does_not_depend_on_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Milestone 1.1: no default config path may assume the process is
+    running from the repository root or any other specific CWD."""
+    other_cwd = tmp_path / "somewhere-else-entirely"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    config_dir = tmp_path / "real-data-dir" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "candidate_profile.yaml").write_text(VALID_CANDIDATE_YAML, encoding="utf-8")
+
+    profile = config.load_candidate_profile(data_dir=tmp_path / "real-data-dir")
+    assert profile.candidate_id == "default-candidate"
 
 
 def test_load_env_reads_adzuna_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

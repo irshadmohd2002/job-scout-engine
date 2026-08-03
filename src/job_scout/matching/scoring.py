@@ -30,8 +30,6 @@ from job_scout.models import (
     SearchProfile,
 )
 
-_EDUCATION_KEYWORDS = ["mba", "master", "bachelor", "postgraduate", "degree", "phd", "doctorate"]
-
 _VISA_POSITIVE_PATTERNS = [
     re.compile(p, re.IGNORECASE)
     for p in [
@@ -124,29 +122,38 @@ def _transferable_skills_component(
     job: Job, candidate: CandidateProfile, weight: float
 ) -> ScoreComponent:
     combined_text = f"{job.title} {job.description_text}"
-    matches = keyword_overlap(candidate.secondary_skills, combined_text)
-    raw = len(matches) / len(candidate.secondary_skills) if candidate.secondary_skills else 0.0
-    # Soft overlap only — per D-005/architecture.md, a missing secondary
-    # skill can never by itself drop a job below a rejection line; this
-    # component only ever adds to the score, it is not a gate.
+    # Milestone 1.1: candidate.transferable_skills (generic, new) is combined
+    # with secondary_skills (Milestone 1's original "nice to have" list) —
+    # both are soft signal for the same component, never a gate.
+    universe = [*candidate.secondary_skills, *candidate.transferable_skills]
+    matches = keyword_overlap(universe, combined_text)
+    raw = len(matches) / len(universe) if universe else 0.0
+    # Soft overlap only — per D-005/architecture.md, a missing secondary/
+    # transferable skill can never by itself drop a job below a rejection
+    # line; this component only ever adds to the score, it is not a gate.
     return ScoreComponent(
         name="transferable_skills",
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=[f"secondary_skill:{m}" for m in matches],
+        evidence=[f"transferable_skill:{m}" for m in matches],
     )
 
 
 def _seniority_experience_component(
     job: Job, candidate: CandidateProfile, search: SearchProfile, weight: float
 ) -> ScoreComponent:
-    seniority_term = candidate.seniority_level.value.replace("_", " ")
-    seniority_matched = seniority_term in job.description_text.lower()
+    seniority_term = candidate.effective_seniority_text()
+    seniority_matched = seniority_term is not None and seniority_term.lower() in (
+        job.description_text.lower()
+    )
+    # No seniority configured at all -> neutral, same as "no match found"
+    # (documented neutral fallback per Milestone 1.1's education-component
+    # rule below — see decisions.md D-017).
     seniority_raw = 1.0 if seniority_matched else 0.5
 
     parsed_range = parse_experience_range(job.description_text)
-    evidence = [f"seniority:{seniority_term}"] if seniority_matched else []
+    evidence = [f"seniority:{seniority_term}"] if seniority_matched and seniority_term else []
     if (
         parsed_range is not None
         and search.min_experience_years is not None
@@ -181,17 +188,35 @@ def _sector_relevance_component(weight: float) -> ScoreComponent:
     )
 
 
-def _education_component(job: Job, weight: float) -> ScoreComponent:
-    text = job.description_text.lower()
-    matched = [kw for kw in _EDUCATION_KEYWORDS if kw in text]
-    raw = 1.0 if matched else 0.5  # "no education requirement stated" -> neutral
-    evidence = [f"education_keyword:{m}" for m in matched]
+def _education_component(job: Job, candidate: CandidateProfile, weight: float) -> ScoreComponent:
+    # Milestone 1.1 (decisions.md D-017): no fixed/universal keyword list —
+    # "MBA" (or any other credential) only ever counts if the *configured
+    # candidate* actually lists it. Vocabulary is the candidate's own
+    # education degrees/fields/levels plus qualifications/certifications/
+    # licences (all generic, profession-agnostic fields).
+    combined_text = f"{job.title} {job.description_text}"
+    vocabulary = [
+        *[e.degree for e in candidate.education if e.degree],
+        *[e.field for e in candidate.education if e.field],
+        *[e.level for e in candidate.education if e.level],
+        *candidate.qualifications,
+        *candidate.certifications,
+        *candidate.licences,
+    ]
+    if not vocabulary:
+        # Nothing configured to evaluate against -> documented neutral, not
+        # a profession-specific fallback (decisions.md D-017).
+        return ScoreComponent(
+            name="education", weight=weight, raw_value=0.5, weighted_value=weight * 0.5, evidence=[]
+        )
+    matches = keyword_overlap(vocabulary, combined_text)
+    raw = 1.0 if matches else 0.5  # no evidence either way -> neutral
     return ScoreComponent(
         name="education",
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=evidence,
+        evidence=[f"education_match:{m}" for m in matches],
     )
 
 
@@ -237,7 +262,7 @@ def compute_score_components(
         _transferable_skills_component(job, candidate, w.transferable_skills),
         _seniority_experience_component(job, candidate, search, w.seniority_experience),
         _sector_relevance_component(w.sector_relevance),
-        _education_component(job, w.education),
+        _education_component(job, candidate, w.education),
         _visa_relocation_component(job, w.visa_relocation),
     ]
 

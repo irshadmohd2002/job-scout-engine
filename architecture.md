@@ -1,9 +1,12 @@
 # Job Scout Engine — Architecture
 
-Status: **Milestone 1 implemented** against this contract (see `MILESTONE_1.md`
-for scope/acceptance criteria and `decisions.md` for the reasoning behind
-choices made here, including D-013 through D-016 covering the small
-corrections/additions found during implementation).
+Status: **Milestone 1 and Milestone 1.1 implemented** against this contract
+(see `MILESTONE_1.md`/`MILESTONE_1_1.md` for scope/acceptance criteria and
+`decisions.md` for the reasoning behind choices made here, including D-013
+through D-016 (Milestone 1 corrections) and D-017 through D-026 (Milestone
+1.1: profession-agnostic scoring/config and locally distributable paths,
+templates, and `init`) — see §15 for the Milestone 1.1 additions
+specifically).
 
 ## 1. System shape
 
@@ -58,7 +61,7 @@ city: str | None
 ```
 
 ### 2.2 `CandidateProfile`
-Loaded from `config/candidate_profile.example.yaml` (or a user copy). Fields:
+Loaded from `src/job_scout/resources/templates/candidate_profile.example.yaml` (or a user copy). Fields:
 `candidate_id`, `years_experience`, `current_location`, `nationality`,
 `seniority_level` (enum: `associate|manager|senior_manager|associate_director|director`),
 `education: list[Education]`, `employment_history_summary: list[str]`,
@@ -73,7 +76,7 @@ canonical internal ids used for scoring/registry role-coverage matching; title
 aliases are surface strings used by the Stage 2 keyword pre-filter.
 
 ### 2.3 `SearchProfile`
-Loaded from `config/search_profiles.example.yaml`, selected by `--profile` on
+Loaded from `src/job_scout/resources/templates/search_profiles.example.yaml`, selected by `--profile` on
 the CLI. Narrows a `CandidateProfile` for one run: `profile_id`,
 `candidate_profile_ref`, `included_countries/excluded_countries`,
 `included_cities/excluded_cities`, `role_families` (empty = inherit candidate's),
@@ -103,7 +106,7 @@ See §8 (Deduplication) for the algorithm. Fields: `canonical_url`,
 `normalized_location`, `description_fingerprint`, `posted_date: date | None`.
 
 ### 2.7 `SourceRegistryEntry`
-See `config/source_registry.example.yaml` for worked examples across every
+See `src/job_scout/resources/templates/source_registry.example.yaml` for worked examples across every
 enum value. Fields: `source_id`, `name`, `source_type` (enum:
 `aggregator_api|ats_feed|government|company_career_page|job_portal|recruitment_agency`),
 `geographic_coverage: list[str]`, `role_coverage: list[str]`,
@@ -471,7 +474,7 @@ job-scout run-once --profile strategy-global --dry-run
 
 `--execution-limits PATH` points at the engine-level guardrail config
 (defaults to `config/execution_limits.yaml`, falling back to
-`config/execution_limits.example.yaml`'s values if no local override exists —
+`src/job_scout/resources/templates/execution_limits.example.yaml`'s values if no local override exists —
 see §11a). `--limit N` is a separate, CLI-only convenience cap on top of
 `max_jobs_processed_per_run` for ad-hoc testing; it never raises the
 configured ceiling, only lowers it for that one invocation.
@@ -554,7 +557,7 @@ above).
 | `max_jobs_processed_per_run` | Optional hard ceiling on total jobs pulled through the pipeline in one invocation, across all sources | unset by default; recommended when testing broad profiles |
 
 These live in `config/execution_limits.yaml` (example at
-`config/execution_limits.example.yaml`), an engine-level runtime config file
+`src/job_scout/resources/templates/execution_limits.example.yaml`), an engine-level runtime config file
 — deliberately **not** part of `SearchProfile`, so a broad search profile
 can never override its own safety ceiling. If a search profile's resolved
 country list
@@ -579,7 +582,7 @@ country:
   particular one, the country is added to that `SelectedSource`'s own
   `unsupported_countries: list[CountryExclusion]` (§2.10) — a source can be
   partially applicable (e.g. `adzuna_api` covers `GB`/`DE`/`CA` but not `AE`,
-  per `config/source_registry.example.yaml`) — and is simply absent from
+  per `src/job_scout/resources/templates/source_registry.example.yaml`) — and is simply absent from
   `supported_countries` / `search_queries` for that country, so no
   `SourceSearchParams` referencing it is ever built.
 
@@ -705,7 +708,7 @@ adapter; a second database backend), not speculative abstraction.
 ## 13. Unresolved design risks
 
 - **R-1 (Adzuna coverage gap)**: Adzuna's public API does not confirm
-  coverage for India or the UAE (`config/source_registry.example.yaml`'s
+  coverage for India or the UAE (`src/job_scout/resources/templates/source_registry.example.yaml`'s
   `adzuna_api.geographic_coverage` deliberately excludes both, and the
   example `strategy-global` profile still requests the UAE so the planner's
   per-source-country exclusion behaviour has a real example to demonstrate —
@@ -763,3 +766,126 @@ adapter; a second database backend), not speculative abstraction.
   deduplication, scoring, and local persistence — it only disables outbound
   notifications and other external write actions. It is not a read-only or
   no-network mode.
+
+## 15. Milestone 1.1: profession-agnostic and locally distributable
+foundations
+
+See `MILESTONE_1_1.md` for scope and `decisions.md` D-017 through D-026 for
+the reasoning. This section documents what changed structurally; §§1–14
+above still describe Milestone 1's pipeline unchanged — 1.1 does not alter
+the pipeline shape, it removes hard-coded profession assumptions from it and
+adds a proper installed-application path model around it.
+
+### 15.1 `AppPaths` and path resolution (`src/job_scout/paths.py`)
+
+```python
+class AppPaths(BaseModel):
+    application_data_dir: Path   # platformdirs root for this install
+    config_dir: Path             # application_data_dir / "config"
+    data_dir: Path                # application_data_dir / "data"
+    database_path: Path           # data_dir / "job_scout.sqlite3"
+    logs_dir: Path
+    cache_dir: Path
+    candidate_profile_path: Path
+    search_profiles_path: Path
+    source_registry_path: Path
+    execution_limits_path: Path
+    scoring_weights_path: Path
+    source_scoring_weights_path: Path
+    environment_file_path: Path | None
+```
+
+`resolve_app_paths(data_dir_override=None, *, env=None) -> AppPaths`
+resolves `application_data_dir` with priority: an explicit `data_dir_override`
+argument (the CLI's `--data-dir`) > `JOB_SCOUT_DATA_DIR` environment variable
+> `platformdirs.user_data_dir("job-scout", appauthor=False)`. Explicit
+per-file CLI flags (`--candidate-profile`, `--db-path`, etc.) take priority
+over anything `AppPaths` computes — they are resolved in `cli.py`, not
+`paths.py`. The current working directory plays no role in this resolution
+(see D-018) except as a documented, secondary convenience for `.env` — see
+15.4.
+
+### 15.2 Packaged templates (`src/job_scout/resources/`)
+
+`src/job_scout/resources/templates/` ships the six canonical, generic config
+templates (candidate profile, search profiles, source registry, execution
+limits, scoring weights, source scoring weights) as package data, read via
+`importlib.resources` (`job_scout.resources.template_text(name)`). This is
+the *only* copy of these templates (D-021) — `config/*.example.yaml` no
+longer exists. `pyproject.toml`'s `[tool.hatch.build.targets.wheel]`/
+`[tool.hatch.build.targets.sdist]` configuration ensures they're included in
+editable installs, wheels, and sdists alike.
+
+### 15.3 `job-scout init` (`src/job_scout/bootstrap.py`)
+
+`run_init(app_paths: AppPaths) -> InitResult` creates `config/`, `data/`,
+`logs/`, `cache/` under `application_data_dir`, copies each packaged
+template to its real filename (skipping any file that already exists —
+never overwrites), and opens the SQLite database once (creating it and
+stamping its schema version — §15.6 — if it doesn't exist yet, verifying it
+otherwise). It never creates `.env` or any credential value (D-019). It is
+idempotent and side-effect-free on a repeated run beyond re-verifying the
+database. `cli.py`'s `init` command surfaces `InitResult` as: directories/
+files created, files skipped (already present), and guidance on which files
+to edit and that credentials are supplied separately.
+
+### 15.4 Environment (`.env`) resolution
+
+`config.load_env()` resolution order: an explicit `path` argument >
+`AppPaths.environment_file_path` (`<application_data_dir>/.env`) if it
+exists > a `.env` in the current working directory if it exists (retained
+only as a documented development convenience, since a repository checkout
+commonly keeps `.env` beside it — never the *primary* default). Real
+environment variables always take precedence over anything loaded from a
+file, unchanged from Milestone 1.
+
+### 15.5 Generic `CandidateProfile` / `SearchProfile` fields
+
+Both models gained optional, generic fields (skills/qualifications/
+certifications/licences/languages, industries/sectors, employment/
+relocation preferences, free-text `seniority` — see D-022 for
+`seniority_level`'s relaxation to optional). `SearchProfile` also gained
+`hard_filters: HardFilterToggles`, a block of boolean opt-in flags; the new
+generic hard-filter inputs (required skills/qualifications/certifications/
+licences, included/excluded keywords, minimum salary) only reject a job
+when their toggle is `True` (D-025). Milestone 1's pre-existing filters are
+unchanged. Every new field is optional with a generic default, so every
+valid Milestone 1 config still validates.
+
+### 15.6 SQLite schema version
+
+`sqlite_repo.py` checks `PRAGMA user_version` on every connection. A fresh
+database and a pre-1.1 Milestone 1 database (never versioned, reads `0`)
+are both stamped `1`; a database whose version is greater than this build's
+`_SCHEMA_VERSION` raises `SchemaVersionError` and refuses to run. See
+D-026 — 1.1 introduces no schema change, so this is purely the versioning
+mechanism itself, not a migration.
+
+### 15.7 Industry/sector/seniority source-selection signal
+
+`SourceRegistryEntry` gained `industry_coverage` / `sector_coverage` /
+`seniority_coverage: list[str] = []` (empty = unrestricted, so every
+existing registry entry is unaffected by default). The planner's
+`sector_relevance` factor (§6's scoring table) now blends real industry+
+sector overlap when a candidate/search profile supplies either; its
+`seniority_relevance` factor now computes real overlap against
+`seniority_coverage`. Both still fall back to `neutral_prior` exactly when
+the corresponding data is absent — no change to `SourceScoringWeights`'
+schema (D-024).
+
+### 15.8 Module layout additions
+
+```
+src/job_scout/
+├── __main__.py            # `python -m job_scout` — same Typer app as job-scout
+├── paths.py                # AppPaths + resolve_app_paths() (§15.1)
+├── bootstrap.py             # run_init() — job-scout init (§15.3)
+├── resources/
+│   ├── __init__.py            # template_text()/templates_root() (§15.2)
+│   └── templates/               # the six canonical *.example.yaml templates
+```
+
+`cli.py` gained `init` and `version` commands; `plan`/`run-once` gained
+`--data-dir`. No other module in §12's tree changed shape — the pipeline,
+planner, compliance gate, adapters, and repository are structurally
+untouched by Milestone 1.1.

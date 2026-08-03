@@ -139,7 +139,11 @@ class CandidateProfile(BaseModel):
     years_experience: float
     current_location: Location
     nationality: str
-    seniority_level: SeniorityLevel
+    # Milestone 1's fixed consulting-ladder enum, relaxed to optional in
+    # Milestone 1.1 (decisions.md D-022) — a profession-agnostic profile uses
+    # the free-text `seniority` field below instead. Kept for backward
+    # compatibility: every valid Milestone 1 config still validates.
+    seniority_level: SeniorityLevel | None = None
     education: list[Education] = []
     employment_history_summary: list[str] = []
     role_families: list[str] = []
@@ -154,8 +158,64 @@ class CandidateProfile(BaseModel):
     excluded_role_families: list[str] = []
     notification_thresholds: NotificationThresholds
 
+    def effective_seniority_text(self) -> str | None:
+        """The candidate's seniority as free text for keyword-overlap use —
+        prefers the generic `seniority` field, falls back to the legacy
+        `seniority_level` enum's value (decisions.md D-022), else None."""
+        if self.seniority:
+            return self.seniority
+        if self.seniority_level:
+            return self.seniority_level.value.replace("_", " ")
+        return None
+
+    # --- Milestone 1.1: generic, profession-agnostic fields -----------------
+    # All optional/additive (decisions.md D-017) — no profession-specific
+    # subclass or hard-coded vocabulary; every value here comes from the
+    # candidate's own configuration.
+    previous_titles: list[str] = []
+    transferable_skills: list[str] = []
+    tools_and_technologies: list[str] = []
+    domain_knowledge: list[str] = []
+    industries: list[str] = []
+    sectors: list[str] = []
+    qualifications: list[str] = []
+    certifications: list[str] = []
+    licences: list[str] = []
+    languages: list[str] = []
+    # Free-text seniority (e.g. "Senior Staff Nurse", "Senior Software
+    # Engineer") — see decisions.md D-022. Scoring/hard-filter code prefers
+    # this over `seniority_level` when both are set.
+    seniority: str | None = None
+    work_authorisation: str | None = None
+    visa_requirements: list[str] = []
+    relocation_preferences: list[str] = []
+    employment_preferences: list[str] = []
+
 
 # --- 2.3 SearchProfile -------------------------------------------------------
+
+
+class HardFilterToggles(BaseModel):
+    """Opt-in gates for Milestone 1.1's new generic hard filters
+    (architecture.md section 15.5; decisions.md D-025). Milestone 1's
+    pre-existing filters (mandatory_qualifications, required_languages,
+    excluded_industries, excluded_role_families, explicit-no-sponsorship)
+    are unaffected — they keep rejecting unconditionally whenever their list
+    is non-empty, exactly as in Milestone 1. Every field here defaults to
+    `False`: a new hard filter never rejects a job unless the search profile
+    explicitly turns it on."""
+
+    enforce_required_skills: bool = False
+    enforce_required_qualifications: bool = False
+    enforce_required_certifications: bool = False
+    enforce_required_licences: bool = False
+    enforce_included_industries: bool = False
+    enforce_excluded_industries: bool = False
+    enforce_included_sectors: bool = False
+    enforce_excluded_sectors: bool = False
+    enforce_included_keywords: bool = False
+    enforce_excluded_keywords: bool = False
+    enforce_minimum_salary: bool = False
 
 
 class SearchProfile(BaseModel):
@@ -176,6 +236,36 @@ class SearchProfile(BaseModel):
     reject_on_explicit_no_sponsorship: bool
     notification_thresholds: NotificationThresholds
     polling_frequency_minutes: int
+
+    # --- Milestone 1.1: generic, profession-agnostic fields -----------------
+    # All optional/additive. The new *_skills/*_qualifications/etc. filters
+    # only reject a job when the matching HardFilterToggles flag is True
+    # (decisions.md D-025) — unlike the legacy fields above, which are
+    # unconditional whenever non-empty.
+    target_titles: list[str] = []
+    title_aliases: list[str] = []
+    required_skills: list[str] = []
+    preferred_skills: list[str] = []
+    transferable_skills: list[str] = []
+    included_industries: list[str] = []
+    excluded_industries: list[str] = []
+    included_sectors: list[str] = []
+    excluded_sectors: list[str] = []
+    required_qualifications: list[str] = []
+    preferred_qualifications: list[str] = []
+    required_certifications: list[str] = []
+    preferred_certifications: list[str] = []
+    required_licences: list[str] = []
+    preferred_licences: list[str] = []
+    preferred_languages: list[str] = []
+    seniority_levels: list[str] = []
+    work_arrangements: list[str] = []
+    minimum_salary: float | None = None
+    minimum_salary_currency: str | None = None
+    visa_relocation_requirements: list[str] = []
+    included_keywords: list[str] = []
+    excluded_keywords: list[str] = []
+    hard_filters: HardFilterToggles = HardFilterToggles()
 
 
 # --- 2.5 / 2.6 / 2.4 Job and supporting models ------------------------------
@@ -238,6 +328,13 @@ class SourceRegistryEntry(BaseModel):
     source_type: SourceType
     geographic_coverage: list[str]
     role_coverage: list[str]
+    # Milestone 1.1 (architecture.md section 15.7; decisions.md D-024):
+    # empty list = unrestricted (matches every entry), same convention as
+    # `role_coverage`'s "general" sentinel but simpler since these three are
+    # new fields with no existing registry data to stay compatible with.
+    industry_coverage: list[str] = []
+    sector_coverage: list[str] = []
+    seniority_coverage: list[str] = []
     access_mode: AccessMode
     approval_status: ApprovalStatus
     terms_compliance_status: TermsComplianceStatus

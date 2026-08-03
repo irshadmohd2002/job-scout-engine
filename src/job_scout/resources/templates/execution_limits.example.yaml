@@ -1,18 +1,20 @@
 # Engine-level API quota and execution guardrails.
 # Deliberately NOT part of search_profiles.yaml: a search profile describes
-# what the candidate wants to find, not how hard the engine is allowed to
-# hit an external API. These limits apply uniformly regardless of how broad
-# a search profile is, and regardless of --dry-run (dry-run only disables
+# what you want to find, not how hard the engine is allowed to hit an
+# external API. These limits apply uniformly regardless of how broad a
+# search profile is, and regardless of --dry-run (dry-run only disables
 # notification dispatch and other external writes — see architecture.md
 # section 11, "Dry-run semantics" — it does not relax these guardrails).
 #
-# cp config/execution_limits.example.yaml config/execution_limits.yaml
-# then adjust to your own risk tolerance / API quota.
+# `job-scout init` copies this template to execution_limits.yaml in your own
+# per-user data directory; adjust it to your own risk tolerance / API quota.
+# Not personal data — pure algorithm/engine tuning, same as
+# scoring_weights.yaml and source_scoring_weights.yaml.
 
 # Caps how many countries one `run-once` invocation will query, even if the
 # selected search profile's included_countries lists more. If exceeded, the
-# planner keeps the highest source-selection-scoring countries and records
-# the truncation on the SearchExecutionPlan rather than silently dropping it.
+# planner keeps the profile's own priority order and records the truncation
+# on the SearchExecutionPlan rather than silently dropping it.
 max_countries_per_run: 6
 
 # Caps pagination depth per (source, country) pair.

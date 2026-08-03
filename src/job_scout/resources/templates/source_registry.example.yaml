@@ -1,27 +1,35 @@
 # Source registry — the compliance-gated catalogue the planner selects from.
-# This file is illustrative: it shows the breadth of access_mode/approval_status
-# combinations the model must support. Only entries with
-# approval_status: approved AND an auto-executable access_mode are ever
-# collected automatically by Milestone 1 (see architecture.md, "Compliance gate").
+#
+# THIS IS A GENERIC, PACKAGED TEMPLATE, illustrative rather than exhaustive:
+# it shows the breadth of access_mode/approval_status combinations the model
+# must support, across real public services, as worked examples — not a
+# recommendation to use all of them, and not tied to any one profession.
+# Only entries with approval_status: approved AND an auto-executable
+# access_mode are ever collected automatically (see architecture.md,
+# "Compliance gate"). `job-scout init` copies this template to
+# source_registry.yaml in your own per-user data directory.
 #
 # access_mode: public_api | public_ats_feed | rss_or_sitemap | email_alert |
 #              permitted_html | search_discovery | manual_only | disabled
 # approval_status: approved | alert_only | requires_authorisation |
 #                   manual_review | blocked | deprecated
+#
+# Milestone 1.1 additions (all optional, default empty = unrestricted —
+# architecture.md section 15.7): industry_coverage, sector_coverage,
+# seniority_coverage. Shown explicitly on adzuna_api below; every other
+# entry relies on the default (unrestricted).
 
 sources:
   - source_id: adzuna_api
     name: "Adzuna Job Search API"
     source_type: aggregator_api
-    # Deliberately excludes AE and IN: Adzuna's public API has no confirmed
-    # coverage for either (verify against Adzuna's current docs before
-    # implementation — see architecture.md R-1). search_profiles.example.yaml's
-    # strategy-global profile still requests AE on purpose, so the planner's
-    # per-source-country exclusion behaviour (architecture.md section 11a)
-    # has a concrete worked example: AE must appear as excluded/non-executable
-    # for this source, with zero API requests made for it.
+    # Illustrative coverage list only — verify against Adzuna's current docs
+    # before relying on it for a real run (architecture.md R-1).
     geographic_coverage: [GB, DE, NL, IE, SG, CA, AU, US]
     role_coverage: [general]
+    industry_coverage: [] # unrestricted — a general aggregator, not industry-specific
+    sector_coverage: []
+    seniority_coverage: []
     access_mode: public_api
     approval_status: approved
     terms_compliance_status: reviewed_ok
@@ -81,33 +89,37 @@ sources:
     historical_match_count: null
     duplicate_rate: null
 
-  - source_id: naukri_alerts
-    name: "Naukri.com job alerts (email)"
+  - source_id: example_job_portal_alerts
+    name: "(Example) Regional job-portal email alerts"
     source_type: job_portal
     geographic_coverage: [IN]
     role_coverage: [general]
     access_mode: email_alert
     approval_status: alert_only
     terms_compliance_status: reviewed_ok
-    auth_required: true # candidate's own Naukri account
+    auth_required: true # candidate's own account on the portal
     technical_feasibility: medium
     expected_value: medium
     priority: 60
     polling_frequency_minutes: 1440
     config_status: not_configured
     required_setup_actions:
-      - "Candidate sets up saved search + email alerts on Naukri"
+      - "Candidate sets up a saved search + email alerts on the portal"
       - "Implement email-alert ingestion (post-M1)"
     adapter_ref: null
     reliability_score: null
     historical_match_count: null
     duplicate_rate: null
 
-  - source_id: iimjobs_alerts
-    name: "iimjobs.com job alerts (email)"
+  - source_id: example_niche_portal_alerts
+    name: "(Example) Niche/profession-specific job-portal email alerts"
     source_type: job_portal
     geographic_coverage: [IN]
-    role_coverage: [strategy_and_planning, corporate_strategy, program_management]
+    # A real registry entry for a niche portal would normally list the
+    # role families it actually covers here; kept generic ([general]) in
+    # this template since the template itself is not written for one
+    # profession.
+    role_coverage: [general]
     access_mode: email_alert
     approval_status: alert_only
     terms_compliance_status: reviewed_ok
@@ -118,15 +130,15 @@ sources:
     polling_frequency_minutes: 1440
     config_status: not_configured
     required_setup_actions:
-      - "Candidate sets up saved search + email alerts on iimjobs"
+      - "Candidate sets up a saved search + email alerts on the portal"
       - "Implement email-alert ingestion (post-M1)"
     adapter_ref: null
     reliability_score: null
     historical_match_count: null
     duplicate_rate: null
 
-  - source_id: naukrigulf_alerts
-    name: "Naukrigulf job alerts (email)"
+  - source_id: example_regional_portal_alerts
+    name: "(Example) Regional job-portal email alerts (Middle East)"
     source_type: job_portal
     geographic_coverage: [middle_east]
     role_coverage: [general]
@@ -140,7 +152,7 @@ sources:
     polling_frequency_minutes: 1440
     config_status: not_configured
     required_setup_actions:
-      - "Candidate sets up saved search + email alerts on Naukrigulf"
+      - "Candidate sets up a saved search + email alerts on the portal"
     adapter_ref: null
     reliability_score: null
     historical_match_count: null

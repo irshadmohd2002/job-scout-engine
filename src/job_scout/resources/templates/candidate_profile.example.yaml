@@ -1,0 +1,103 @@
+# Candidate profile — the durable "who am I" definition.
+#
+# THIS IS A GENERIC, PACKAGED TEMPLATE. Every value below is a placeholder
+# chosen only to keep the schema structurally complete — it does not
+# describe any real person, and it is not written for any one profession.
+# Job Scout Engine has no profession-specific code: a nurse, a software
+# engineer, and a management consultant all use this exact same file shape,
+# describing themselves differently in configuration.
+#
+# `job-scout init` copies this template to candidate_profile.yaml in your
+# own per-user data directory. Edit that copy with your real details —
+# never this template. See README.md "Configuration bootstrap and privacy".
+#
+# Search profiles (search_profiles.yaml) narrow this per search run. Most
+# lists below are additive signals for the matching pipeline, not hard
+# requirements — hard requirements are opt-in, per search profile, via
+# SearchProfile.hard_filters (see search_profiles.example.yaml).
+
+candidate_id: default-candidate
+
+years_experience: 5.0 # placeholder — replace with your real years of experience
+
+current_location:
+  country: XX # placeholder ISO 3166-1 alpha-2 — replace with your real country
+  region: null
+  city: null
+
+nationality: XX # placeholder — replace with your real nationality
+
+# Free-text seniority, in your own profession's language, e.g.
+# "Senior Staff Nurse", "Senior Software Engineer", "Associate Director".
+# Leave null if you'd rather not signal a seniority tier.
+seniority: null
+
+# Legacy Milestone 1 field: a fixed consulting-career-ladder enum (one of
+# associate, manager, senior_manager, associate_director, director).
+# Optional — most profiles should use `seniority` above instead, which
+# accepts any profession's own vocabulary. Leave null unless you
+# specifically want this exact enum.
+seniority_level: null
+
+education:
+  - level: "Example: postgraduate"
+    degree: "Example Degree A (e.g. MBA, MSc Nursing, MEng)"
+    field: "Example field (e.g. General Management, Adult Nursing, Mechanical Engineering)"
+    institution: "Example Institution"
+  - level: "Example: undergraduate"
+    degree: "Example Degree B"
+    field: "Example field"
+    institution: null
+
+employment_history_summary:
+  - "Example: role title, Example Employer A"
+  - "Example: role title, Example Employer B"
+
+qualifications: [] # e.g. ["Chartered Accountant", "PMP"]
+certifications: [] # e.g. ["AWS Certified Solutions Architect"]
+licences: [] # e.g. ["Registered Nurse License (state/region)"]
+languages: [] # spoken/written languages you have, e.g. ["English", "German"]
+
+# --- Role targeting ---
+previous_titles: [] # job titles you've actually held
+
+role_families:
+  - example_role_family_a
+  - example_role_family_b
+
+title_aliases:
+  - "Example Job Title A"
+  - "Example Job Title B"
+
+primary_skills:
+  - example_primary_skill_a
+  - example_primary_skill_b
+
+secondary_skills:
+  - example_secondary_skill_a
+
+transferable_skills: [] # skills that carry across roles/professions
+tools_and_technologies: [] # e.g. ["Epic EHR", "Python", "SAP"]
+domain_knowledge: [] # e.g. ["clinical governance", "cloud infrastructure"]
+
+industries: [] # e.g. ["healthcare", "technology"]
+sectors: [] # e.g. ["public_sector", "financial_services"]
+
+# --- International mobility ---
+target_countries: [] # empty = open; a search profile narrows this per run
+target_regions: []
+
+requires_work_authorisation_support: true
+open_to_relocation: true
+work_authorisation: null # free text, e.g. "requires Skilled Worker sponsorship in the UK"
+visa_requirements: [] # free-text evidence/requirements, e.g. ["Tier 2 sponsorship required"]
+relocation_preferences: [] # e.g. ["prefers English-speaking countries"]
+employment_preferences: [] # e.g. ["full_time", "hybrid"]
+
+excluded_industries: []
+excluded_role_families: []
+
+# --- Default notification thresholds (overridable per search profile) ---
+notification_thresholds:
+  priority_score: 85
+  digest_score: 70

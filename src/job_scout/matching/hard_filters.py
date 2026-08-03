@@ -257,4 +257,160 @@ def evaluate_hard_filters(
                 )
             )
 
+    rejections.extend(_evaluate_opt_in_hard_filters(job, search, combined_text))
+
     return HardFilterResult(passed=not rejections, rejections=rejections)
+
+
+def _missing_items_rejections(
+    *, rule: str, label: str, required: list[str], text: str
+) -> list[RejectionReason]:
+    return [
+        RejectionReason(
+            rule=rule,
+            detail=f"Required {label} '{item}' not found in job description.",
+            evidence=None,
+        )
+        for item in required
+        if item.lower() not in text
+    ]
+
+
+def _evaluate_opt_in_hard_filters(
+    job: Job, search: SearchProfile, combined_text: str
+) -> list[RejectionReason]:
+    """Milestone 1.1's new generic hard filters — every one of these only
+    rejects a job when the matching `SearchProfile.hard_filters` toggle is
+    explicitly True (decisions.md D-025). Milestone 1's original filters
+    above are unaffected and keep rejecting unconditionally when non-empty."""
+    toggles = search.hard_filters
+    rejections: list[RejectionReason] = []
+
+    if toggles.enforce_required_skills:
+        rejections.extend(
+            _missing_items_rejections(
+                rule="missing_required_skill",
+                label="skill",
+                required=search.required_skills,
+                text=combined_text,
+            )
+        )
+    if toggles.enforce_required_qualifications:
+        rejections.extend(
+            _missing_items_rejections(
+                rule="missing_required_qualification_search_profile",
+                label="qualification",
+                required=search.required_qualifications,
+                text=combined_text,
+            )
+        )
+    if toggles.enforce_required_certifications:
+        rejections.extend(
+            _missing_items_rejections(
+                rule="missing_required_certification",
+                label="certification",
+                required=search.required_certifications,
+                text=combined_text,
+            )
+        )
+    if toggles.enforce_required_licences:
+        rejections.extend(
+            _missing_items_rejections(
+                rule="missing_required_licence",
+                label="licence",
+                required=search.required_licences,
+                text=combined_text,
+            )
+        )
+
+    if toggles.enforce_included_industries and search.included_industries:
+        if not any(industry.lower() in combined_text for industry in search.included_industries):
+            rejections.append(
+                RejectionReason(
+                    rule="not_in_included_industries",
+                    detail=(
+                        "Job does not match any of the search profile's included_industries "
+                        f"{search.included_industries}."
+                    ),
+                    evidence=None,
+                )
+            )
+    if toggles.enforce_excluded_industries:
+        for industry in search.excluded_industries:
+            if industry.lower() in combined_text:
+                rejections.append(
+                    RejectionReason(
+                        rule="excluded_industry_search_profile",
+                        detail=f"Job matches search profile's excluded industry '{industry}'.",
+                        evidence=industry,
+                    )
+                )
+
+    if toggles.enforce_included_sectors and search.included_sectors:
+        if not any(sector.lower() in combined_text for sector in search.included_sectors):
+            rejections.append(
+                RejectionReason(
+                    rule="not_in_included_sectors",
+                    detail=(
+                        "Job does not match any of the search profile's included_sectors "
+                        f"{search.included_sectors}."
+                    ),
+                    evidence=None,
+                )
+            )
+    if toggles.enforce_excluded_sectors:
+        for sector in search.excluded_sectors:
+            if sector.lower() in combined_text:
+                rejections.append(
+                    RejectionReason(
+                        rule="excluded_sector",
+                        detail=f"Job matches search profile's excluded sector '{sector}'.",
+                        evidence=sector,
+                    )
+                )
+
+    if toggles.enforce_included_keywords and search.included_keywords:
+        if not any(kw.lower() in combined_text for kw in search.included_keywords):
+            rejections.append(
+                RejectionReason(
+                    rule="missing_included_keyword",
+                    detail=(
+                        "Job does not contain any of the search profile's included_keywords "
+                        f"{search.included_keywords}."
+                    ),
+                    evidence=None,
+                )
+            )
+    if toggles.enforce_excluded_keywords:
+        for keyword in search.excluded_keywords:
+            if keyword.lower() in combined_text:
+                rejections.append(
+                    RejectionReason(
+                        rule="excluded_keyword",
+                        detail=f"Job matches search profile's excluded keyword '{keyword}'.",
+                        evidence=keyword,
+                    )
+                )
+
+    if toggles.enforce_minimum_salary and search.minimum_salary is not None:
+        currency_mismatch = (
+            search.minimum_salary_currency is not None
+            and job.salary_currency is not None
+            and job.salary_currency != search.minimum_salary_currency
+        )
+        # Fail open (R-3 stance) when there's no comparable salary data at
+        # all, or the currencies don't match and can't be compared directly.
+        if job.salary_max is not None and not currency_mismatch:
+            if job.salary_max < search.minimum_salary:
+                rejections.append(
+                    RejectionReason(
+                        rule="below_minimum_salary",
+                        detail=(
+                            f"Job's salary_max {job.salary_max:g} is below the search "
+                            f"profile's minimum_salary {search.minimum_salary:g}."
+                        ),
+                        evidence=f"salary_max={job.salary_max:g}",
+                    )
+                )
+
+    return rejections

@@ -1,0 +1,37 @@
+# Source-selection scoring weights (architecture.md section 6, "Source-
+# selection scoring" table). Not personal data — pure algorithm tuning, same
+# status as execution_limits.yaml and scoring_weights.yaml.
+# `config.load_source_scoring_weights()` falls back to this packaged
+# template automatically if no local source_scoring_weights.yaml override
+# exists (architecture.md section 15.2; decisions.md D-021).
+#
+# `job-scout init` copies this template to source_scoring_weights.yaml in
+# your own per-user data directory; adjust to taste. The ten component
+# weights below must sum to 1.0.
+#
+# Milestone 1.1 (decisions.md D-024): sector_relevance now also reflects
+# industry relevance when your candidate/search profile supplies it, and
+# seniority_relevance now reflects real overlap against a source's
+# seniority_coverage when supplied — no new weight fields were added, so an
+# existing override of this file from before Milestone 1.1 still works
+# unchanged.
+
+country_region_relevance: 0.20
+role_family_relevance: 0.20
+sector_relevance: 0.05
+seniority_relevance: 0.05
+historical_matching_jobs: 0.10
+freshness: 0.10
+visa_international_usefulness: 0.10
+source_reliability: 0.10
+duplicate_rate_inverted: 0.05
+technical_quality: 0.05
+
+# Cold-start neutral value used for any factor with no real data yet
+# (architecture.md section 6 "Cold-start default" column).
+neutral_prior: 0.5
+
+# Diversity rule (architecture.md section 6, step 4): two sources with
+# historical duplicate_rate above this threshold against each other are
+# treated as redundant; the higher-scoring one is kept.
+diversity_duplicate_rate_threshold: 0.6

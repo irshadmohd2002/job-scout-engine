@@ -26,6 +26,17 @@ from job_scout.models import (
     VisaAssessment,
 )
 
+_SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(Exception):
+    """Raised when an existing database's PRAGMA user_version is newer than
+    this build understands (architecture.md section 15.6; decisions.md
+    D-026). Milestone 1.1 adds no migration framework by design — refusing
+    to run is the safe response to a schema this build has never seen,
+    rather than risking silent corruption."""
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
@@ -118,6 +129,27 @@ class SqliteJobRepository:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._ensure_schema_version()
+
+    def _ensure_schema_version(self) -> None:
+        """PRAGMA user_version check (architecture.md section 15.6;
+        decisions.md D-026). A brand-new database and a pre-Milestone-1.1
+        database (schema-identical, but never stamped, so it reads 0) are
+        both stamped the current version — 1.1 introduces no schema change,
+        so this is purely the versioning mechanism itself, not a migration.
+        A database from a newer, unsupported schema version refuses to run.
+        """
+        (current_version,) = self._conn.execute("PRAGMA user_version").fetchone()
+        if current_version > _SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"Database schema version {current_version} is newer than this build of "
+                f"job-scout supports (version {_SCHEMA_VERSION}). Refusing to run to avoid "
+                "corrupting data — upgrade job-scout, or point --db-path at a different "
+                "database."
+            )
+        if current_version < _SCHEMA_VERSION:
+            self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()

@@ -21,7 +21,11 @@ build/
 .vscode/
 .idea/
 
-# Real, non-example config — contains personal candidate/profile data.
-# Only *.example.yaml files under config/ are tracked.
-config/*.yaml
-!config/*.example.yaml
+# Milestone 1.1: real config/database/logs/cache live in the per-user data
+# directory resolved by AppPaths (platformdirs), outside this repository —
+# see decisions.md D-018/D-021. Nothing under config/ is tracked or
+# generated here any more (config/*.example.yaml was replaced by the
+# packaged templates under src/job_scout/resources/templates/). Kept as a
+# defensive ignore in case a local dev workflow points --data-dir at a
+# directory inside the repo.
+config/

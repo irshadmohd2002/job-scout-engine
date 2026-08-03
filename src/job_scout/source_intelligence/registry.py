@@ -17,8 +17,10 @@ from job_scout.models import SourceRegistryEntry
 __all__ = ["load_registry", "index_by_id"]
 
 
-def load_registry(path: Path | None = None) -> list[SourceRegistryEntry]:
-    return load_source_registry(path)
+def load_registry(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> list[SourceRegistryEntry]:
+    return load_source_registry(path, data_dir=data_dir)
 
 
 def index_by_id(entries: list[SourceRegistryEntry]) -> dict[str, SourceRegistryEntry]:
