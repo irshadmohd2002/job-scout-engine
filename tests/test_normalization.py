@@ -1,5 +1,12 @@
 from datetime import UTC, datetime
 
+from job_scout.matching.normalize import (
+    PhraseMatch,
+    match_phrase,
+    meaningful_tokens,
+    normalize_text,
+    normalize_tokens,
+)
 from job_scout.models import RawJobRecord, RemoteType
 from job_scout.pipeline import normalize_adzuna_record, strip_html
 
@@ -79,3 +86,61 @@ def test_normalize_adzuna_record_guesses_remote_type() -> None:
 def test_normalize_adzuna_record_fingerprint_uses_canonical_url() -> None:
     job = normalize_adzuna_record(_raw_record())
     assert "utm_source" not in job.fingerprint.canonical_url
+
+
+# --- Connector-token handling (decisions.md D-033) --------------------------
+
+_STRONG_TITLE_COVERAGE = 0.75
+
+
+def _title_match(phrase: str, title: str) -> PhraseMatch:
+    return match_phrase(
+        phrase,
+        title_norm=normalize_text(title),
+        title_tokens=set(normalize_tokens(title)),
+        description_norm="",
+        coverage_threshold=_STRONG_TITLE_COVERAGE,
+    )
+
+
+def test_data_and_analytics_associate_does_not_strongly_match_reporting_partner_title() -> None:
+    """The confirmed false positive: 'Data & Analytics Associate' shares
+    data/and/analytics (3/4 raw tokens = 0.75) with 'People Reporting and
+    Analytics Data Partner', but the occupational head term 'associate' is
+    entirely absent. Meaningful-token coverage (data, analytics, associate
+    -> 2/3 = 0.67) must fall below the strong-match gate."""
+    result = _title_match(
+        "Data & Analytics Associate", "People Reporting and Analytics Data Partner"
+    )
+    assert result.method == "none"
+
+
+def test_data_and_analytics_associate_does_match_reordered_variant() -> None:
+    result = _title_match("Data & Analytics Associate", "Associate - Data and Analytics")
+    assert result.method in {"exact_phrase", "token_coverage"}
+    assert result.strength >= _STRONG_TITLE_COVERAGE
+
+
+def test_strategy_and_transformation_lead_matches_ampersand_and_and_variants() -> None:
+    result = _title_match("Strategy & Transformation Lead", "Strategy and Transformation Lead")
+    assert result.method == "exact_phrase"
+
+
+def test_business_strategy_analyst_consultant_matches_punctuation_variants() -> None:
+    for variant in [
+        "Business Strategy Analyst/Consultant",
+        "Business Strategy Analyst - Consultant",
+        "Business Strategy Analyst, Consultant",
+    ]:
+        result = _title_match("Business Strategy Analyst/Consultant", variant)
+        assert result.method == "exact_phrase", variant
+
+
+def test_connector_word_removal_never_produces_an_empty_phrase() -> None:
+    assert meaningful_tokens(["and", "the", "of"]) == ["and", "the", "of"]
+    assert meaningful_tokens([]) == []
+
+
+def test_one_matching_content_token_from_multiword_phrase_does_not_pass() -> None:
+    result = _title_match("Data & Analytics Associate", "Data Entry Clerk")
+    assert result.method == "none"

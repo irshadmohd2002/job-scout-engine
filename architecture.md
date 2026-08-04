@@ -541,25 +541,43 @@ transferable-skills component is a *soft* overlap ratio, never a gating
 condition — it can only add to the score, never by itself drop a job below a
 rejection line (Stage 1 is the only stage that rejects).
 
-**Best-match title/role-family scoring (decisions.md D-032, Parts 1–3)**: the
-original formula divided every matched phrase by the *entire* configured
-title/role-family vocabulary, which mechanically diluted an exact
-target-title match by however many *other* titles a profile happened to
-configure. `title_role_family`'s raw score is now
-`(best_title_match_strength + best_role_family_match_strength) / 2`, where
-each "best match" is the single strongest configured phrase match — never
-an average or ratio over the full vocabulary, so configuring additional
-unrelated titles/role-families can never lower an existing exact match's
-score. Matching itself reuses Stage 2's `matching.normalize.match_phrase`
-(exact normalised phrase, or token-coverage ≥ the same
-`PrefilterWeights.strong_title_coverage` threshold for multi-word phrases) —
-the same function in both stages, so a job that clears Stage 2 on
-token-coverage title evidence is guaranteed non-zero credit for that same
-evidence at Stage 5 (previously Stage 5 used exact-substring-only matching,
-so some jobs passed the Stage 2 gate on evidence Stage 5 then scored as
-zero). Each match is further scaled by: field (a title-field match always
-outweighs a description-only match, mirroring Stage 2's
-`desc_only_damping`) and provenance tier (an active `SearchProfile` signal —
+**Best-match title/role-family scoring (decisions.md D-032, Parts 1–3;
+D-033)**: the original formula divided every matched phrase by the *entire*
+configured title/role-family vocabulary, which mechanically diluted an
+exact target-title match by however many *other* titles a profile happened
+to configure. `title_role_family`'s raw score is now
+`max(best_title_match_strength, (best_title_match_strength +
+best_role_family_match_strength) / 2)` (`_combine_title_role_family`,
+D-033), where each "best match" is the single strongest configured phrase
+match — never an average or ratio over the full vocabulary, so configuring
+additional unrelated titles/role-families can never lower an existing
+exact match's score. Title strength is the primary signal: an exact title
+match alone keeps its full strength regardless of whether a separate
+role-family phrase also matched (the earlier unconditional
+`(title + role_family) / 2` average wrongly halved a title-only exact
+match down to 0.5), a role-family match *weaker than or equal to* the
+title match never drags the combined score down (the average then falls
+at or below title strength, so the `max()` keeps title strength
+unchanged), a role-family match *stronger* than the title match can raise
+the combined score above title alone, and role-family evidence with no
+title match at all still contributes at exactly half its own strength
+(unchanged from the pre-D-033 formula, which was already just
+`role_family_match_strength / 2` whenever there was no title evidence to
+average against). Matching itself reuses Stage 2's
+`matching.normalize.match_phrase` (exact normalised phrase, or
+token-coverage ≥ the same `PrefilterWeights.strong_title_coverage`
+threshold for multi-word phrases, now computed over each phrase's
+*meaningful* content tokens — connector/function words like "and"/"of"/
+"the" are excluded from both the numerator and denominator via
+`matching.normalize.meaningful_tokens`, D-033 — so a connector word can no
+longer complete a multi-word phrase's coverage) — the same function in
+both stages, so a job that clears Stage 2 on token-coverage title evidence
+is guaranteed non-zero credit for that same evidence at Stage 5
+(previously Stage 5 used exact-substring-only matching, so some jobs
+passed the Stage 2 gate on evidence Stage 5 then scored as zero). Each
+match is further scaled by: field (a title-field match always outweighs a
+description-only match, mirroring Stage 2's `desc_only_damping`) and
+provenance tier (an active `SearchProfile` signal —
 `target_titles`/`title_aliases`/`role_families` — outweighs a
 `CandidateProfile` signal of otherwise-equal match quality, and
 `CandidateProfile.previous_titles` ranks lowest of all, so a candidate's

@@ -746,3 +746,79 @@ exhibited is now corrected under a synthetic profile shaped like the real
 one (no dependency on the user's private database or config files, per
 this task's explicit instruction).
 this incident is exactly the case it exists for.
+
+### D-033: Connector-word-aware token coverage + title/role-family
+aggregation no longer halves an exact title match
+**Decision**: Two narrowly-scoped follow-on corrections to D-032's Stage
+2/5 matching, after confirming five specific jobs still scored/ranked
+wrong post-calibration (Business Strategy Consultant 38.79, Business
+Strategy Analyst/Consultant 38.79, Strategy Manager 25.00, People
+Reporting and Analytics Data Partner 28.59, Model Build & Data Analytics
+Manager 25.26):
+1. **Meaningful-token coverage** (`matching/normalize.py`): added a fixed,
+   profession-agnostic set of English connector/function words (`and`,
+   `or`, `of`, `the`, `for`, `to`, `in`, `on`, `with`, `a`, `an` —
+   `_CONNECTOR_TOKENS`) and a `meaningful_tokens()` helper that strips them
+   from a phrase's tokens (falling back to the original tokens if nothing
+   would remain, so a phrase can never be filtered to empty).
+   `phrase_token_coverage` now computes its ratio over a phrase's
+   meaningful tokens only, instead of every raw token — so "Data &
+   Analytics Associate" (tokens `data, and, analytics, associate`) needs
+   its 3 content tokens present, not 3-of-4 raw tokens padded by "and".
+   This fixed the false positive where "People Reporting and Analytics
+   Data Partner" shared `data`, `and`, `analytics` (3/4 = 0.75, exactly at
+   the gate) with the configured phrase, even though the phrase's
+   occupational head term `associate` was entirely absent; under
+   meaningful-token coverage the same job shares only `data`+`analytics`
+   out of 3 content tokens (0.67), below the gate. `normalize_text`/
+   `normalize_tokens` (destructive storage/display normalisation) are
+   untouched — connector filtering applies only inside
+   `phrase_token_coverage`, shared unchanged by Stage 2's strong-title gate
+   and Stage 5's best-match scoring (both already called the same
+   `match_phrase`, per D-032 Part 3).
+2. **Title/role-family aggregation** (`matching/scoring.py`): replaced the
+   unconditional `(best_title + best_role_family) / 2` with
+   `max(best_title, (best_title + best_role_family) / 2)`
+   (`_combine_title_role_family`). The averaging formula halved an exact
+   active target-title match (best_title=1.0) down to 0.5 whenever no
+   *separate* role-family phrase also happened to match — title score is
+   now the primary signal, and the title/role-family average is only ever
+   used when it says more than title score alone: a weaker or absent
+   role-family match can never drag an existing title match down (the
+   average is then <= best_title, so the max() falls back to best_title
+   unchanged), a *stronger* role-family match can raise the combined score
+   above title alone, and role-family evidence with no title match at all
+   still contributes at exactly its pre-D-033 value (`best_role_family /
+   2`, since the average with a zero title score is unchanged) — so
+   role-family-only jobs already covered by D-032's live-case regression
+   (`test_strong_strategy_group_outranks_weak_data_and_trainee_group`)
+   keep the exact same score, and only the specific halved-exact-title-match
+   case is corrected.
+**Alternatives**: A hand-maintained profession-specific stopword list
+(rejected outright — CLAUDE.md hard constraint 10 explicitly forbids
+hard-coding "strategy", "consultant", "data", "analyst", "manager",
+"associate", etc.); filtering connector words out of `available_tokens`
+(the job title's own token set) as well as the phrase (rejected as
+unnecessary — only the phrase's own tokens ever get looked up in the
+title's token set, so a connector word appearing in the title was never
+capable of matching anything by itself); the task's own illustrative
+`max(best_title, 0.75 * best_title + 0.25 * best_role_family)` formula
+(tried first, then rejected — it also caps *any* role-family-only match at
+a quarter weight instead of half, which silently re-scored several
+already-correct role-family-only jobs from D-032's own live-case
+regression test downward, dropping "Consulting Project Team Lead -
+Corporate Strategy" from 25.0 to 6.25 and inverting its ranking against a
+weaker trainee-role job; `max(best_title, average)` fixes only the
+specific reported defect — an exact title match losing credit to a missing
+role-family signal — without touching the already-validated role-family-only
+calibration, which is the smaller, more conservative change).
+**Why**: Both fixes are structural (a fixed closed-class connector-word
+list, and a bounded max/blend formula), not new profession vocabulary, so
+CLAUDE.md hard constraint 10 stays satisfied. Verified against synthetic
+fixtures shaped like the confirmed regressions in
+`tests/test_normalization.py` and `tests/test_scoring.py`
+(`test_strong_strategy_group_outranks_weak_data_and_trainee_group` and the
+new title-role aggregation regressions) — no dependency on the user's
+private database or config files. `notification_thresholds`, Adzuna
+querying, and Milestone 2 scope were all explicitly out of bounds for this
+task and untouched.

@@ -17,6 +17,17 @@ _AMPERSAND_RE = re.compile(r"&")
 _NON_ALPHANUMERIC_RE = re.compile(r"[^a-z0-9\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+_CONNECTOR_TOKENS = frozenset(
+    {"and", "or", "of", "the", "for", "to", "in", "on", "with", "a", "an"}
+)
+# Generic English connector/function words only — never a profession-specific
+# term (no "strategy", "consultant", "data", "analyst", "manager",
+# "associate", ...; CLAUDE.md hard constraint 10). Used exclusively by
+# `meaningful_tokens`/`phrase_token_coverage` to decide which tokens count
+# toward *coverage ratios*; `normalize_text`/`normalize_tokens` above (the
+# destructive-storage/display normalisation) never consult this set, so
+# stored/displayed titles are untouched.
+
 
 def normalize_text(text: str) -> str:
     """Lowercase; underscores and `&` become spaces/" and "; every other
@@ -72,18 +83,40 @@ def contains_phrase_tokens(text_tokens: list[str], phrase_tokens: list[str]) -> 
     return any(text_tokens[start : start + m] == phrase_tokens for start in range(n - m + 1))
 
 
+def meaningful_tokens(tokens: list[str]) -> list[str]:
+    """`tokens` with generic connector/function words (`_CONNECTOR_TOKENS`)
+    removed — the content words that actually carry occupational meaning.
+    Falls back to the original `tokens` unchanged whenever removing
+    connectors would leave nothing (a configured phrase must retain at
+    least one meaningful token to test coverage against), so this never
+    turns a non-empty phrase into an empty one. Profession-agnostic: the
+    connector list is fixed English function words, never a profession
+    vocabulary term (CLAUDE.md hard constraint 10)."""
+    content = [token for token in tokens if token not in _CONNECTOR_TOKENS]
+    return content if content else tokens
+
+
 def phrase_token_coverage(phrase_tokens: list[str], available_tokens: set[str]) -> float:
-    """Fraction of `phrase_tokens` present anywhere in `available_tokens`
-    (order-independent). The structural, stopword-list-free safeguard
-    against a single generic word completing a multi-word configured
-    phrase — shared by the Stage 2 pre-filter's strong-title gate
+    """Fraction of `phrase_tokens`' *meaningful* content tokens (connector
+    words removed via `meaningful_tokens`) present anywhere in
+    `available_tokens` (order-independent). Restricting the ratio to
+    content tokens is what stops a connector word like "and" from counting
+    toward a multi-word phrase's coverage — e.g. "Data & Analytics
+    Associate" normalises to tokens `data, and, analytics, associate`; only
+    `data`, `analytics`, `associate` count, so a job title containing only
+    "data" and "analytics" (2 of 3 content tokens) scores 0.67, not 0.75
+    (3 of 4 raw tokens, which used to wrongly clear the default 0.75 gate).
+    Still the structural, stopword-*vocabulary*-free safeguard against a
+    single generic word completing a multi-word configured phrase —
+    shared by the Stage 2 pre-filter's strong-title gate
     (matching/prefilter.py) and Stage 5's best-match title/role-family
     scoring (matching/scoring.py), so both stages agree on what counts as
     a genuine multi-word title/role-family match."""
-    if not phrase_tokens:
+    content_tokens = meaningful_tokens(phrase_tokens)
+    if not content_tokens:
         return 0.0
-    matched = sum(1 for token in phrase_tokens if token in available_tokens)
-    return matched / len(phrase_tokens)
+    matched = sum(1 for token in content_tokens if token in available_tokens)
+    return matched / len(content_tokens)
 
 
 @dataclass(frozen=True)

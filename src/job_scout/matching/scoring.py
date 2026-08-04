@@ -112,6 +112,38 @@ _ROLE_FAMILY_TIER_WEIGHTS: dict[str, float] = {
     "candidate_role_family": 0.85,
 }
 
+def _combine_title_role_family(title_score: float, role_score: float) -> float:
+    """`raw = max(title_score, (title_score + role_score) / 2)`, replacing
+    the earlier unconditional `(title_score + role_score) / 2` average.
+
+    The earlier average halved an exact target-title match (title_score=1.0)
+    down to 0.5 whenever no separate role-family phrase happened to match —
+    absence of independent role-family evidence should not discount an
+    otherwise-exact title match. Taking the max against title_score itself
+    is the entire fix: title_score is the primary signal and the
+    title/role-family average is supporting evidence that is only ever
+    used when it says *more* than title_score alone:
+      - title alone (role_score=0): average = title/2 <= title, so
+        raw = title — full, undiminished title credit.
+      - title + a stronger role-family match (role_score > title_score):
+        average > title_score, so raw = average — role evidence can raise
+        the combined score above title alone, never lower it below.
+      - title + a weaker/absent role-family match (role_score <=
+        title_score): average <= title_score, so raw = title_score —
+        weak/no role evidence never drags an existing title match down.
+      - role family alone (title_score=0): raw = max(0, role/2) = role/2 —
+        still contributes (unchanged from the pre-D-033 formula, which was
+        already exactly `role_score / 2` whenever there was no title
+        evidence to average against), but bounded below any genuine title
+        match of equal or greater strength.
+    Both inputs and the result are already bounded to [0, 1] (title_score
+    and role_score are each a match strength in [0, 1] scaled by a field
+    factor and tier weight, both <= 1), so the average of two values in
+    [0, 1] cannot exceed 1.0 and neither can the max() against title_score
+    itself — no double counting can push the combined score above 1.0."""
+    average = (title_score + role_score) / 2
+    return max(title_score, average)
+
 
 def _best_phrase_match(
     labeled_phrases: list[tuple[str, str]],
@@ -193,7 +225,7 @@ def _title_role_family_component(
         coverage_threshold=coverage_threshold,
     )
 
-    raw = (title_score + role_score) / 2
+    raw = _combine_title_role_family(title_score, role_score)
     return ScoreComponent(
         name="title_role_family",
         weight=weight,

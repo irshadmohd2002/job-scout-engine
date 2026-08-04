@@ -1,3 +1,5 @@
+import pytest
+
 from job_scout import config
 from job_scout.matching.prefilter import PrefilterWeights, run_prefilter
 from job_scout.matching.scoring import (
@@ -6,10 +8,12 @@ from job_scout.matching.scoring import (
     determine_notification_tier,
 )
 from job_scout.models import (
+    CandidateProfile,
     HardFilterResult,
     NotificationThresholds,
     NotificationTier,
     PrefilterResult,
+    SearchProfile,
 )
 from tests.factories import make_candidate_profile, make_job, make_search_profile
 
@@ -397,6 +401,301 @@ def test_candidate_role_family_contributes_without_diluting_search_target_eviden
     assert with_history_title.raw_value == without_history_title.raw_value
 
 
+# --- D-033 regression: title/role-family aggregation formula ----------------
+
+
+def test_exact_target_title_alone_receives_full_title_role_family_credit() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+
+    assert title_role_family.raw_value == 1.0
+
+
+def test_matching_role_family_evidence_does_not_reduce_an_exact_title_match() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    title_only_search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    title_and_role_search = make_search_profile(
+        target_titles=["Strategy Manager"], role_families=["strategy_management"]
+    )
+    job = make_job(
+        title="Strategy Manager",
+        description_text="This is a strategy management role.",
+    )
+
+    title_only = compute_score_components(job, candidate, title_only_search, _weights())
+    title_and_role = compute_score_components(job, candidate, title_and_role_search, _weights())
+    title_only_component = next(c for c in title_only if c.name == "title_role_family")
+    title_and_role_component = next(c for c in title_and_role if c.name == "title_role_family")
+
+    assert title_and_role_component.raw_value >= title_only_component.raw_value
+
+
+def test_role_family_only_evidence_contributes_less_than_exact_target_title() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    role_only_search = make_search_profile(target_titles=[], role_families=["strategy_management"])
+    title_search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+
+    role_only_job = make_job(
+        title="Strategy Management Lead", description_text="A generic role."
+    )
+    title_job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    role_only_components = compute_score_components(
+        role_only_job, candidate, role_only_search, _weights()
+    )
+    title_components = compute_score_components(title_job, candidate, title_search, _weights())
+    role_only_component = next(c for c in role_only_components if c.name == "title_role_family")
+    title_component = next(c for c in title_components if c.name == "title_role_family")
+
+    assert role_only_component.raw_value > 0.0
+    assert role_only_component.raw_value < title_component.raw_value
+
+
+def test_candidate_previous_title_does_not_outrank_exact_active_search_target() -> None:
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    history_only_candidate = make_candidate_profile(
+        title_aliases=[], role_families=[], previous_titles=["Strategy Manager"]
+    )
+    search_no_target = make_search_profile(target_titles=[], role_families=[])
+    history_components = compute_score_components(
+        job, history_only_candidate, search_no_target, _weights()
+    )
+    history_component = next(c for c in history_components if c.name == "title_role_family")
+
+    empty_candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search_with_target = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    active_components = compute_score_components(
+        job, empty_candidate, search_with_target, _weights()
+    )
+    active_component = next(c for c in active_components if c.name == "title_role_family")
+
+    assert active_component.raw_value > history_component.raw_value
+
+
+def test_unrelated_additional_configured_titles_do_not_reduce_title_role_family_score() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    exact_search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    unrelated_titles = [f"Completely Unrelated Title {i}" for i in range(10)]
+    padded_search = make_search_profile(
+        target_titles=["Strategy Manager", *unrelated_titles], role_families=[]
+    )
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    exact_components = compute_score_components(job, candidate, exact_search, _weights())
+    padded_components = compute_score_components(job, candidate, padded_search, _weights())
+    exact_component = next(c for c in exact_components if c.name == "title_role_family")
+    padded_component = next(c for c in padded_components if c.name == "title_role_family")
+
+    assert padded_component.raw_value == exact_component.raw_value
+
+
+# --- D-033 regression: connector-word-aware title/role matching -------------
+# The confirmed post-D-032 false positives: token coverage over *raw* tokens
+# let a shared connector word ("and") count toward a multi-word configured
+# phrase's coverage ratio, wrongly gating jobs whose actual occupational head
+# term was absent.
+
+
+def test_data_and_analytics_associate_does_not_score_reporting_partner_job() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=["Data & Analytics Associate"], role_families=[])
+    job = make_job(
+        title="People Reporting and Analytics Data Partner",
+        description_text="A generic role.",
+    )
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+
+    assert title_role_family.raw_value == 0.0
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "People Reporting and Analytics Data Partner",
+        "Senior Manager - Model Build & Data Analytics",
+        "Lead - Clinical Data Manager / Data Analytics",
+    ],
+)
+def test_confirmed_false_positive_titles_do_not_strongly_gate_stage2(title: str) -> None:
+    candidate = _empty_candidate_for_precision()
+    search = _search_for_precision(target_titles=["Data & Analytics Associate"], role_families=[])
+    job = make_job(title=title, description_text="A generic role.")
+
+    result = run_prefilter(
+        job, candidate, search, PrefilterWeights.from_scoring_weights(_weights())
+    )
+
+    assert not any("strong_title_match" in e for e in result.evidence), (title, result.evidence)
+
+
+@pytest.mark.parametrize(
+    ("title", "description"),
+    [
+        ("Strategy Manager", "A generic role."),
+        ("Business Strategy Consultant", "Business strategy consulting engagement."),
+        ("Consultant (Strategy and Transformation)", "A generic role."),
+        (
+            "Consulting Project Team Lead - Corporate Strategy",
+            "Leads corporate strategy consulting projects.",
+        ),
+        ("Business Strategy Analyst/Consultant", "A generic role."),
+    ],
+)
+def test_relevant_strategy_titles_still_strongly_gate_stage2(title: str, description: str) -> None:
+    candidate = _empty_candidate_for_precision(
+        title_aliases=["Strategy Consultant", "Business Strategy Consultant"]
+    )
+    search = _search_for_precision(
+        target_titles=["Strategy Manager"],
+        role_families=["corporate_strategy", "strategy_and_transformation"],
+    )
+    job = make_job(title=title, description_text=description)
+
+    result = run_prefilter(
+        job, candidate, search, PrefilterWeights.from_scoring_weights(_weights())
+    )
+
+    assert any("strong_title_match" in e for e in result.evidence), (title, result.evidence)
+
+
+def _empty_candidate_for_precision(**overrides: object) -> CandidateProfile:
+    base: dict[str, object] = {"title_aliases": [], "role_families": []}
+    base.update(overrides)
+    return make_candidate_profile(**base)
+
+
+def _search_for_precision(**overrides: object) -> SearchProfile:
+    base: dict[str, object] = {"target_titles": [], "role_families": []}
+    base.update(overrides)
+    return make_search_profile(**base)
+
+
+# --- D-033 live-case ranking regression --------------------------------------
+
+
+def _connector_fix_candidate() -> object:
+    return make_candidate_profile(
+        title_aliases=[
+            "Business Strategy Consultant",
+            "Data & Analytics Associate",
+            "Business Analyst",
+        ],
+        role_families=["business_strategy"],
+    )
+
+
+def _connector_fix_search() -> object:
+    return make_search_profile(
+        target_titles=["Strategy Manager"],
+        role_families=["business_strategy"],
+        min_experience_years=5,
+        max_experience_years=15,
+    )
+
+
+def test_strategy_manager_ranks_above_reporting_and_analytics_data_partner() -> None:
+    candidate = _connector_fix_candidate()
+    search = _connector_fix_search()
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+
+    strategy_manager = build_match_result(
+        make_job(title="Strategy Manager", description_text="Corporate strategy team role."),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+    reporting_partner = build_match_result(
+        make_job(
+            title="People Reporting and Analytics Data Partner",
+            description_text="A generic role.",
+        ),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+
+    assert strategy_manager.final_score is not None
+    assert reporting_partner.final_score is not None
+    assert strategy_manager.final_score > reporting_partner.final_score
+
+
+def test_business_strategy_consultant_ranks_above_model_build_data_analytics_manager() -> None:
+    candidate = _connector_fix_candidate()
+    search = _connector_fix_search()
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+
+    business_strategy_consultant = build_match_result(
+        make_job(
+            title="Business Strategy Consultant",
+            description_text="Business strategy consulting engagement.",
+        ),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+    model_build_manager = build_match_result(
+        make_job(
+            title="Model Build & Data Analytics Manager",
+            description_text="Builds credit risk models using data analytics.",
+        ),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+
+    assert business_strategy_consultant.final_score is not None
+    assert model_build_manager.final_score is not None
+    assert business_strategy_consultant.final_score > model_build_manager.final_score
+
+
+def test_business_analyst_trainee_remains_below_standard_business_analyst_role() -> None:
+    candidate = _connector_fix_candidate()
+    search = _connector_fix_search()
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+
+    standard = build_match_result(
+        make_job(title="Business Analyst", description_text="Business analyst role, London."),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+    trainee = build_match_result(
+        make_job(
+            title="Business Analyst Trainee",
+            description_text="Entry point into a BA career.",
+        ),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+
+    assert standard.final_score is not None
+    assert trainee.final_score is not None
+    assert trainee.final_score < standard.final_score
+
+
 # --- Part 4 regression: search-profile-aware skill scoring -----------------
 
 
@@ -724,7 +1023,23 @@ def _live_like_search() -> object:
     )
 
 
-def test_strong_strategy_group_outranks_weak_data_and_trainee_group() -> None:
+def test_strong_strategy_group_outranks_weak_data_group() -> None:
+    """The data/clinical titles here are false positives on generic
+    "data"/"analytics" overlap and must stay below every genuinely relevant
+    strategy title, regardless of which title/role-family evidence tier won
+    for each. (D-033 note: this test previously also included "Business
+    Analyst Trainee" in the weak group and asserted it stayed below the
+    weakest strong job here — "Consulting Project Team Lead - Corporate
+    Strategy", a role-family-only match. D-033's title/role_family
+    aggregation fix correctly stopped halving exact title/alias matches
+    with no separate role-family evidence, which also raises the trainee
+    job's own exact `candidate_title_alias:'Business Analyst'` match — so a
+    trainee posting can now legitimately outscore an unrelated job that
+    only ever had weak role-family-only evidence. The trainee-specific
+    invariant ("a trainee posting scores below the equivalent standard
+    posting") is covered on its own, not against this heterogeneous group —
+    see test_trainee_role_scores_below_standard_role_for_experienced_search
+    and test_business_analyst_trainee_remains_below_standard_business_analyst_role.)"""
     candidate = _live_like_candidate()
     search = _live_like_search()
     hard_filter_result = HardFilterResult(passed=True, rejections=[])
@@ -749,10 +1064,6 @@ def test_strong_strategy_group_outranks_weak_data_and_trainee_group() -> None:
         make_job(
             title="Senior Manager - Model Build & Data Analytics",
             description_text="Builds credit risk models using data analytics.",
-        ),
-        make_job(
-            title="Business Analyst Trainee",
-            description_text="Entry-level trainee programme for business analysts.",
         ),
     ]
 
