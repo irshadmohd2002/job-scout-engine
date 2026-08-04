@@ -494,6 +494,179 @@ def test_unrelated_additional_configured_titles_do_not_reduce_title_role_family_
     assert padded_component.raw_value == exact_component.raw_value
 
 
+# --- D-034 regression: active-search-intent classification and aggregation --
+# Confirmed live defects from the read-only audit: "Data Business Analyst"
+# (candidate-history title alias + incidental sector match, no active
+# SearchProfile title/role-family evidence at all) outranking "Strategy
+# Manager" (exact active target-title match, 31.25 vs 25.0); and active
+# SearchProfile role-family-only evidence ("Consulting Project Team Lead -
+# Corporate Strategy", two distinct active role-family matches on the
+# title) scoring the same 12.5 as a single weaker active role-family match,
+# and below candidate-history-only jobs once their fallback skill/
+# responsibilities components stacked on top.
+
+
+def test_active_role_family_alone_receives_substantially_more_than_old_half_credit() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=[], role_families=["strategy_management"])
+    job = make_job(title="Strategy Management Lead", description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+
+    # old formula: exactly role_score / 2 == 0.5 for a perfect match.
+    assert title_role_family.raw_value > 0.5
+    assert title_role_family.raw_value < 1.0
+    assert any(
+        "active_search_intent_tier:active_role_family" in e for e in title_role_family.evidence
+    )
+
+
+def test_two_distinct_active_role_family_title_matches_reinforce_above_one() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    single_match_search = make_search_profile(target_titles=[], role_families=["strategy"])
+    reinforced_search = make_search_profile(
+        target_titles=[], role_families=["strategy", "corporate_strategy"]
+    )
+    job = make_job(
+        title="Consulting Project Team Lead - Corporate Strategy",
+        description_text="Leads corporate strategy consulting projects.",
+    )
+
+    single_components = compute_score_components(job, candidate, single_match_search, _weights())
+    reinforced_components = compute_score_components(job, candidate, reinforced_search, _weights())
+    single_component = next(c for c in single_components if c.name == "title_role_family")
+    reinforced_component = next(c for c in reinforced_components if c.name == "title_role_family")
+
+    assert reinforced_component.raw_value > single_component.raw_value
+    assert reinforced_component.raw_value < 1.0
+
+
+def test_candidate_only_role_family_alone_scores_less_than_active_role_family_alone() -> None:
+    active_candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    active_search = make_search_profile(target_titles=[], role_families=["strategy_management"])
+    candidate_only_candidate = make_candidate_profile(
+        title_aliases=[], role_families=["strategy_management"]
+    )
+    candidate_only_search = make_search_profile(target_titles=[], role_families=[])
+    job = make_job(title="Strategy Management Lead", description_text="A generic role.")
+
+    active_component = next(
+        c
+        for c in compute_score_components(job, active_candidate, active_search, _weights())
+        if c.name == "title_role_family"
+    )
+    candidate_only_component = next(
+        c
+        for c in compute_score_components(
+            job, candidate_only_candidate, candidate_only_search, _weights()
+        )
+        if c.name == "title_role_family"
+    )
+
+    assert active_component.raw_value > candidate_only_component.raw_value
+    assert any(
+        "active_search_intent_tier:candidate_history_only" in e
+        for e in candidate_only_component.evidence
+    )
+
+
+def test_candidate_title_alias_and_previous_title_are_supplemental_and_ordered() -> None:
+    search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    active_component = next(
+        c
+        for c in compute_score_components(
+            job, make_candidate_profile(title_aliases=[], role_families=[]), search, _weights()
+        )
+        if c.name == "title_role_family"
+    )
+    alias_component = next(
+        c
+        for c in compute_score_components(
+            job,
+            make_candidate_profile(
+                title_aliases=["Strategy Manager"], previous_titles=[], role_families=[]
+            ),
+            make_search_profile(target_titles=[], role_families=[]),
+            _weights(),
+        )
+        if c.name == "title_role_family"
+    )
+    previous_title_component = next(
+        c
+        for c in compute_score_components(
+            job,
+            make_candidate_profile(
+                title_aliases=[], previous_titles=["Strategy Manager"], role_families=[]
+            ),
+            make_search_profile(target_titles=[], role_families=[]),
+            _weights(),
+        )
+        if c.name == "title_role_family"
+    )
+
+    # active target title > candidate title alias > candidate previous title
+    assert active_component.raw_value > alias_component.raw_value
+    assert alias_component.raw_value > previous_title_component.raw_value
+    assert any(
+        "active_search_intent_tier:active_target_title" in e for e in active_component.evidence
+    )
+    assert any(
+        "active_search_intent_tier:candidate_history_only" in e for e in alias_component.evidence
+    )
+    assert any(
+        "active_search_intent_tier:candidate_history_only" in e
+        for e in previous_title_component.evidence
+    )
+
+
+def test_no_title_or_role_evidence_is_classified_and_scores_zero() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=[], role_families=[])
+    job = make_job(title="Completely Unrelated Role", description_text="Nothing configured.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+
+    assert title_role_family.raw_value == 0.0
+    assert any(
+        "active_search_intent_tier:no_title_or_role_evidence" in e
+        for e in title_role_family.evidence
+    )
+
+
+def test_candidate_history_with_sector_match_does_not_outrank_active_target_title() -> None:
+    """The confirmed live defect: a job supported only by a candidate title
+    alias plus an incidental sector/industry mention (live score 31.25)
+    outranked a job with an exact active SearchProfile target-title match
+    and no sector evidence at all (live score 25.0)."""
+    candidate = make_candidate_profile(title_aliases=["Business Analyst"], role_families=[])
+    search = make_search_profile(
+        target_titles=["Strategy Manager"], role_families=[], included_industries=["ai"]
+    )
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+
+    candidate_history_job = make_job(
+        title="Data Business Analyst",
+        description_text="A generic data role, powered by AI.",
+    )
+    active_target_job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    candidate_history_result = build_match_result(
+        candidate_history_job, candidate, search, hard_filter_result, prefilter_result, _weights()
+    )
+    active_target_result = build_match_result(
+        active_target_job, candidate, search, hard_filter_result, prefilter_result, _weights()
+    )
+
+    assert candidate_history_result.final_score is not None
+    assert active_target_result.final_score is not None
+    assert active_target_result.final_score > candidate_history_result.final_score
+
+
 # --- D-033 regression: connector-word-aware title/role matching -------------
 # The confirmed post-D-032 false positives: token coverage over *raw* tokens
 # let a shared connector word ("and") count toward a multi-word configured
@@ -1016,7 +1189,14 @@ def _live_like_search() -> object:
     return make_search_profile(
         target_titles=["Strategy Manager", "Head of Strategy", "Director of Corporate Strategy"],
         role_families=["strategy", "corporate_strategy", "business_transformation"],
-        preferred_skills=["business_strategy", "stakeholder_management"],
+        # "financial_modelling" matches the real live profile's
+        # preferred_skills (decisions.md D-034 audit gap: the fixture used
+        # to omit it, so this fixture never actually exercised the
+        # confirmed live near-miss between "Consulting Project Team Lead -
+        # Corporate Strategy" and "Senior Manager - Model Build & Data
+        # Analytics" below — see
+        # test_reinforced_active_role_family_outranks_candidate_history_only_job.
+        preferred_skills=["business_strategy", "stakeholder_management", "financial_modelling"],
         included_industries=["telecom", "government"],
         min_experience_years=5,
         max_experience_years=15,
@@ -1063,7 +1243,7 @@ def test_strong_strategy_group_outranks_weak_data_group() -> None:
         ),
         make_job(
             title="Senior Manager - Model Build & Data Analytics",
-            description_text="Builds credit risk models using data analytics.",
+            description_text="Builds risk models using financial modelling and data analytics.",
         ),
     ]
 
@@ -1083,3 +1263,47 @@ def test_strong_strategy_group_outranks_weak_data_group() -> None:
     assert all(score is not None for score in strong_scores)
     assert all(score is not None for score in weak_scores)
     assert min(strong_scores) > max(weak_scores)
+
+
+def test_reinforced_active_role_family_outranks_candidate_history_only_job() -> None:
+    """The specific confirmed live regression within the group above:
+    "Consulting Project Team Lead - Corporate Strategy" (two distinct
+    active SearchProfile role-family matches on the title — 'strategy' and
+    'corporate_strategy', no configured title match) scored 12.5 under the
+    pre-D-034 `role_score / 2` formula, *below* "Senior Manager - Model
+    Build & Data Analytics" at 17.29 (candidate-only role-family evidence
+    plus an incidental active preferred-skill match on 'financial_modelling')
+    — a pure-candidate-history job outranking a job with reinforced active
+    SearchProfile evidence. D-034's role-family aggregation fix corrects
+    this specific pairing, not just the group's min/max invariant above."""
+    candidate = _live_like_candidate()
+    search = _live_like_search()
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+
+    reinforced_active_role_job = build_match_result(
+        make_job(
+            title="Consulting Project Team Lead - Corporate Strategy",
+            description_text="Leads corporate strategy consulting projects.",
+        ),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+    candidate_history_job = build_match_result(
+        make_job(
+            title="Senior Manager - Model Build & Data Analytics",
+            description_text="Builds risk models using financial modelling and data analytics.",
+        ),
+        candidate,
+        search,
+        hard_filter_result,
+        prefilter_result,
+        _weights(),
+    )
+
+    assert reinforced_active_role_job.final_score is not None
+    assert candidate_history_job.final_score is not None
+    assert reinforced_active_role_job.final_score > candidate_history_job.final_score

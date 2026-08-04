@@ -822,3 +822,121 @@ new title-role aggregation regressions) — no dependency on the user's
 private database or config files. `notification_thresholds`, Adzuna
 querying, and Milestone 2 scope were all explicitly out of bounds for this
 task and untouched.
+
+### D-034: Active-search-intent evidence classification and role-family
+aggregation correction
+**Decision**: A read-only audit against the live database (161 stored
+match results, real `candidate_profile.yaml`/`search_profiles.yaml`)
+confirmed two ranking defects surviving D-032/D-033: (1) "Data Business
+Analyst" (candidate-history title alias only, plus an incidental
+`search.included_industries` sector match on the generic token "ai") scored
+31.25, above "Strategy Manager" (exact active `SearchProfile.target_titles`
+match, no sector evidence) at 25.0 — a job with *zero* active search-profile
+title/role-family evidence outranking one with the strongest possible
+active evidence; (2) "Consulting Project Team Lead - Corporate Strategy"
+(two distinct active `search.role_families` matches on the title —
+`strategy` and `corporate_strategy`) scored only 12.5, identical to a
+single weaker active role-family match and below candidate-history-only
+jobs whose fallback skill/responsibilities components stacked on top,
+because `_combine_title_role_family`'s role-alone case was always exactly
+`role_score / 2` regardless of whether the match was this run's actual
+active ask or only the candidate's own history, and regardless of how many
+distinct active phrases matched. Two narrowly-scoped corrections in
+`matching/scoring.py`, both provenance-structural (never new profession
+vocabulary):
+1. **Active-search-intent classification** (`_EvidenceTier`,
+   `_classify_evidence_tier`): a small internal `StrEnum` —
+   `active_target_title` / `active_title_alias` / `active_role_family` /
+   `candidate_history_only` / `no_title_or_role_evidence` — derived
+   directly from `_best_phrase_match`'s structured `_PhraseScore` results
+   (label/field/score), never by re-parsing rendered evidence strings.
+   `_best_phrase_match` was refactored to return `list[_PhraseScore]`
+   instead of a `(float, list[str])` tuple, with a separate
+   `_render_phrase_evidence` step producing byte-identical evidence text to
+   the pre-D-034 format — the structured data is now the single source of
+   truth for both the human-readable evidence and the classification/
+   aggregation logic. The classification is recorded in
+   `title_role_family`'s own evidence as `active_search_intent_tier:<value>`
+   — a transparency label, not a new public `ScoreComponent` (CLAUDE.md hard
+   constraint 9: no new abstraction) or `ScoringWeights` schema field
+   (constraint explicitly given for this task).
+2. **Role-family-alone credit** (`_role_family_alone_credit`, folded into
+   `_combine_title_role_family` via `max(title_score, average,
+   role_alone_credit)`): replaces the flat `role_score / 2` with three
+   provenance-aware factors — a single active `search_role_family` match
+   alone now earns `role_score * 0.70` (`_ACTIVE_ROLE_FAMILY_ALONE_CREDIT`);
+   two or more *distinct* active role-family phrases matched in the job's
+   *title* field (never a single incidental description-only mention — the
+   reinforcement count is filtered to `field == "title"`) earn
+   `role_score * 0.85` (`_ACTIVE_ROLE_FAMILY_REINFORCED_CREDIT`);
+   candidate-only role-family evidence keeps its pre-existing, unchanged
+   `role_score * 0.5` (`_CANDIDATE_ROLE_FAMILY_ALONE_CREDIT`, numerically
+   identical to the old blanket factor, so candidate-only role-family
+   scores are byte-for-byte unchanged by this fix). Active and
+   candidate-only evidence are evaluated independently (not "whichever
+   phrase scored highest overall") so a weaker active match is never
+   shadowed by a stronger candidate-only match sharing the same phrase
+   list. Folding this in via `max()` alongside D-033's existing
+   `max(title_score, average)` means it can only ever raise the combined
+   score, never lower an existing title or averaged score — candidate
+   history still never reduces active evidence. `candidate_title_alias`/
+   `candidate_previous_title`'s provenance tiers (`_TITLE_TIER_WEIGHTS`)
+   were also lowered from 0.85/0.7 to 0.55/0.4 — the gap between them and
+   the active tiers (still 1.0, unchanged) was too narrow for a
+   candidate-alias-only title match plus one incidental sector/skill hit to
+   reliably stay below a bare exact active target-title match; `search_
+   target_title`/`search_title_alias`/`search_role_family`'s tiers, the
+   D-033 `max(title_score, average)` blend, and every other Stage 5
+   component (`sector_relevance`, `required_skills`, `transferable_skills`,
+   `responsibilities`, `seniority_experience`, `education`,
+   `visa_relocation`) are untouched.
+**Verification**: all pre-existing `tests/test_scoring.py` assertions
+(55 tests) pass unchanged against the new formula — none hard-coded the old
+absolute tier/credit values, only relational orderings the fix preserves or
+strengthens. Seven new tests cover the classification tags, the
+active-alone/reinforced/candidate-only credit ordering
+(`0.70`/`0.85` > `0.5`), the `candidate_title_alias`/`previous_title`
+ordering, and — the concrete regressions — a synthetic mirror of "Data
+Business Analyst" vs "Strategy Manager" and a dedicated
+`test_reinforced_active_role_family_outranks_candidate_history_only_job`
+reproducing "Consulting Project Team Lead - Corporate Strategy" vs "Senior
+Manager - Model Build & Data Analytics". The latter required closing a gap
+the audit found in the pre-existing `_live_like_search()` fixture (it
+omitted `financial_modelling` from `preferred_skills`, unlike the real
+profile, so `test_strong_strategy_group_outranks_weak_data_group` never
+actually exercised the live near-miss) — `financial_modelling` was added to
+the fixture and to the "Senior Manager" job's synthetic description,
+faithfully reproducing the real ~17.29 near-miss score the fix must (and
+now does) rank below the reinforced-role-family job's 21.25. Re-run against
+the real live database/profile (read-only, no config or DB writes):
+"Data Business Analyst" 31.25 → 23.75 (now below "Strategy Manager"'s
+unchanged 25.0); "Consulting Project Team Lead - Corporate Strategy"
+12.5 → 21.25 (now above "Senior Manager - Model Build & Data Analytics"'s
+unchanged 17.29); "Location Strategy Analyst"/"Assistant Director -
+Operational Strategy" (single active role-family match) 12.5 → 17.50;
+"Management Consultant" (candidate-title-alias-only) 21.25 → 13.75.
+**Alternatives**: A new public `search_intent_alignment` `ScoreComponent`
+(rejected — would require a `ScoringWeights` schema change and rebalancing
+every existing `scoring_weights.yaml`, including the real one, for no
+benefit the existing five-tier provenance system doesn't already
+structurally provide; the task explicitly scoped this out); a cross-
+component final-score cap/multiplier gating on "no active search-profile
+evidence at all" (considered — would further address sector/skill-fallback
+stacking against a *candidate-history-only* job, but was out of this task's
+explicit scope, which named only the title/role-family classification and
+aggregation; left for a follow-up if the live re-run above still shows
+stacking defects after this fix); reducing `candidate_role_family`'s
+per-phrase tier weight (0.85) directly instead of adding a separate
+role-alone credit factor (rejected — would also shrink the D-033 `average`
+blend path for jobs where a candidate role family combines with a
+candidate title alias, an unrelated case this task did not confirm as
+defective; the added `role_alone_credit` term changes only the specific
+role-family-only aggregation path the audit identified).
+**Why**: Every change is provenance-structural (which configured list a
+phrase came from, and how many distinct ones matched), never new
+profession-specific vocabulary, so CLAUDE.md hard constraint 10 stays
+satisfied. `notification_thresholds`, Adzuna query construction, Milestone
+2 scope, and all private configuration files were explicitly out of bounds
+for this task and untouched — this ADR and its code change only ever
+*read* the private database/config to verify the fix, never wrote to
+either.

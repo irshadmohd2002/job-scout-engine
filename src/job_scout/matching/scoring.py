@@ -24,6 +24,8 @@ section 10 documents the same contract at the table level.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from enum import StrEnum
 
 from job_scout.config import ScoringWeights
 from job_scout.matching.hard_filters import parse_experience_range
@@ -104,63 +106,181 @@ _DESCRIPTION_FIELD_DAMPING = 0.5
 _TITLE_TIER_WEIGHTS: dict[str, float] = {
     "search_target_title": 1.0,
     "search_title_alias": 1.0,
-    "candidate_title_alias": 0.85,
-    "candidate_previous_title": 0.7,
+    "candidate_title_alias": 0.55,
+    "candidate_previous_title": 0.4,
 }
 _ROLE_FAMILY_TIER_WEIGHTS: dict[str, float] = {
     "search_role_family": 1.0,
     "candidate_role_family": 0.85,
 }
+# candidate_title_alias/candidate_previous_title lowered from their
+# pre-D-034 values of 0.85/0.7 (decisions.md D-034): a candidate's own
+# historical title vocabulary is supplemental evidence for *this run's*
+# active ask, not a near-equivalent of it — the pre-D-034 gap (0.85 vs the
+# active tiers' 1.0) let a candidate-alias-only match combine with an
+# incidental sector/skill hit to outrank a job with a genuine exact active
+# `search_target_title` match and nothing else (the confirmed live
+# regression: "Data Business Analyst" 31.25 > "Strategy Manager" 25.0).
+# search_target_title/search_title_alias (this run's actual ask) and
+# search_role_family/candidate_role_family (unchanged from D-032/D-033) are
+# untouched — this fix only widens the gap between active-search and
+# candidate-history *title* evidence.
 
-def _combine_title_role_family(title_score: float, role_score: float) -> float:
-    """`raw = max(title_score, (title_score + role_score) / 2)`, replacing
-    the earlier unconditional `(title_score + role_score) / 2` average.
 
-    The earlier average halved an exact target-title match (title_score=1.0)
-    down to 0.5 whenever no separate role-family phrase happened to match —
-    absence of independent role-family evidence should not discount an
-    otherwise-exact title match. Taking the max against title_score itself
-    is the entire fix: title_score is the primary signal and the
-    title/role-family average is supporting evidence that is only ever
-    used when it says *more* than title_score alone:
-      - title alone (role_score=0): average = title/2 <= title, so
-        raw = title — full, undiminished title credit.
-      - title + a stronger role-family match (role_score > title_score):
-        average > title_score, so raw = average — role evidence can raise
-        the combined score above title alone, never lower it below.
-      - title + a weaker/absent role-family match (role_score <=
-        title_score): average <= title_score, so raw = title_score —
-        weak/no role evidence never drags an existing title match down.
-      - role family alone (title_score=0): raw = max(0, role/2) = role/2 —
-        still contributes (unchanged from the pre-D-033 formula, which was
-        already exactly `role_score / 2` whenever there was no title
-        evidence to average against), but bounded below any genuine title
-        match of equal or greater strength.
-    Both inputs and the result are already bounded to [0, 1] (title_score
-    and role_score are each a match strength in [0, 1] scaled by a field
-    factor and tier weight, both <= 1), so the average of two values in
-    [0, 1] cannot exceed 1.0 and neither can the max() against title_score
-    itself — no double counting can push the combined score above 1.0."""
+class _EvidenceTier(StrEnum):
+    """Part 1 (decisions.md D-034): a small, internal classification of a
+    job's *strongest* title/role-family evidence, derived directly from the
+    structured `_PhraseScore` provenance labels `_best_phrase_match`
+    already produces — never by re-parsing the rendered evidence strings.
+    Not a new public model/ScoreComponent (CLAUDE.md hard constraint 9/10):
+    purely a transparency label recorded in `title_role_family`'s own
+    evidence list, and the vocabulary is entirely provenance-based (which
+    configured list matched), never a profession-specific term."""
+
+    ACTIVE_TARGET_TITLE = "active_target_title"
+    ACTIVE_TITLE_ALIAS = "active_title_alias"
+    ACTIVE_ROLE_FAMILY = "active_role_family"
+    CANDIDATE_HISTORY_ONLY = "candidate_history_only"
+    NO_TITLE_OR_ROLE_EVIDENCE = "no_title_or_role_evidence"
+
+
+def _classify_evidence_tier(
+    title_scores: list[_PhraseScore], role_scores: list[_PhraseScore]
+) -> _EvidenceTier:
+    """Strongest evidence *category* present for this job, in the same
+    active-over-candidate precedence the scoring formula below uses:
+    an active target-title match outranks an active title-alias match,
+    which outranks active role-family evidence, which outranks any
+    candidate-only (history) match, which outranks no evidence at all."""
+    if any(s.label == "search_target_title" for s in title_scores):
+        return _EvidenceTier.ACTIVE_TARGET_TITLE
+    if any(s.label == "search_title_alias" for s in title_scores):
+        return _EvidenceTier.ACTIVE_TITLE_ALIAS
+    if any(s.label == "search_role_family" for s in role_scores):
+        return _EvidenceTier.ACTIVE_ROLE_FAMILY
+    if title_scores or role_scores:
+        return _EvidenceTier.CANDIDATE_HISTORY_ONLY
+    return _EvidenceTier.NO_TITLE_OR_ROLE_EVIDENCE
+
+
+_ACTIVE_ROLE_FAMILY_ALONE_CREDIT = 0.70
+_ACTIVE_ROLE_FAMILY_REINFORCED_CREDIT = 0.85
+_CANDIDATE_ROLE_FAMILY_ALONE_CREDIT = 0.5
+# Part 2 (decisions.md D-034): the credit role-family evidence contributes
+# on its own (no title match), replacing the old blanket
+# `role_score / 2` — a flat 0.5 factor applied identically regardless of
+# whether the match came from this run's active SearchProfile or only the
+# candidate's own history — with three provenance-aware factors:
+#   - a single active `search_role_family` match now earns substantially
+#     more (0.70) than the old flat half-credit, reflecting that it *is*
+#     this run's actual ask, just without a separately configured title
+#     phrase also matching (e.g. "Consulting Project Team Lead - Corporate
+#     Strategy", "Location Strategy Analyst");
+#   - two or more *distinct* active role-family phrases matched in the
+#     job's *title* field (never a single incidental description-only
+#     mention — see `_role_family_alone_credit`'s `field == "title"`
+#     filter) reinforce that credit further (0.85), since two independent
+#     active-search phrases both matching the title is stronger evidence
+#     than one;
+#   - `_CANDIDATE_ROLE_FAMILY_ALONE_CREDIT` is deliberately left at the
+#     pre-existing D-032/D-033 value (0.5) — candidate-only role-family
+#     scores are unchanged by this fix; only active evidence gets more
+#     credit, so active role-family-only evidence now strictly outranks
+#     candidate-only role-family-only evidence of equal match strength
+#     (0.70/0.85 vs 0.5), satisfying Part 2 requirement 3.
+
+
+def _role_family_alone_credit(role_scores: list[_PhraseScore]) -> float:
+    """The best credit this job's role-family evidence can contribute
+    *on its own*, independent of any title match — folded into
+    `_combine_title_role_family` via `max()`, so it can only ever raise the
+    combined score, never lower it (Part 2 requirement 5: candidate
+    evidence never reduces active evidence). Active (`search_role_family`)
+    and candidate-only (`candidate_role_family`) evidence are evaluated
+    independently — using the single overall best-scoring role phrase
+    regardless of provenance would let a stronger candidate-only match
+    (e.g. an exact title-field hit) shadow a weaker but still-genuine
+    active match, silently discarding real active evidence."""
+    active = [s for s in role_scores if s.label == "search_role_family"]
+    candidate = [s for s in role_scores if s.label == "candidate_role_family"]
+
+    active_credit = 0.0
+    if active:
+        reinforcing_title_matches = {s.phrase for s in active if s.field == "title"}
+        factor = (
+            _ACTIVE_ROLE_FAMILY_REINFORCED_CREDIT
+            if len(reinforcing_title_matches) >= 2
+            else _ACTIVE_ROLE_FAMILY_ALONE_CREDIT
+        )
+        active_credit = max(s.score for s in active) * factor
+
+    candidate_credit = 0.0
+    if candidate:
+        candidate_credit = max(s.score for s in candidate) * _CANDIDATE_ROLE_FAMILY_ALONE_CREDIT
+
+    return max(active_credit, candidate_credit)
+
+
+def _combine_title_role_family(
+    title_score: float, role_score: float, role_alone_credit: float
+) -> float:
+    """`raw = max(title_score, (title_score + role_score) / 2,
+    role_alone_credit)` (decisions.md D-034, extending D-033's
+    `max(title_score, average)`).
+
+    `title_score` and the `(title_score + role_score) / 2` average behave
+    exactly as under D-033 — title is the primary signal, an exact title
+    match keeps its full strength regardless of role-family evidence, and
+    a stronger role-family match can still raise the combined score above
+    title alone. `role_alone_credit` (`_role_family_alone_credit`) is the
+    new third candidate in the `max()`: the provenance-aware credit
+    role-family evidence earns standing entirely on its own, replacing the
+    old unconditional `role_score / 2` fallback with active-vs-candidate
+    and single-vs-reinforced distinctions (Part 2 requirements 2–4). Since
+    it only ever participates via `max()`, it can raise the combined score
+    when role-family evidence is unusually strong for its provenance tier,
+    but can never pull an existing title or averaged score down (Part 2
+    requirement 5). All three inputs are already bounded to [0, 1] (each a
+    match strength in [0, 1] scaled by a field factor and tier/credit
+    factor, all <= 1), so their `max()` cannot exceed 1.0 (Part 2
+    requirement 6)."""
     average = (title_score + role_score) / 2
-    return max(title_score, average)
+    return max(title_score, average, role_alone_credit)
+
+
+@dataclass(frozen=True)
+class _PhraseScore:
+    """One configured phrase's structured match result against a job —
+    the single source of truth for both the human-readable evidence
+    strings (`_render_phrase_evidence`) and the active-vs-candidate-history
+    classification/aggregation above (`_classify_evidence_tier`,
+    `_role_family_alone_credit`), so neither has to re-parse rendered
+    evidence text to recover provenance (Part 1)."""
+
+    label: str
+    phrase: str
+    field: str
+    method: str
+    strength: float
+    score: float
 
 
 def _best_phrase_match(
     labeled_phrases: list[tuple[str, str]],
     tier_weights: dict[str, float],
-    evidence_label: str,
     *,
     title_norm: str,
     title_tokens: set[str],
     description_norm: str,
     coverage_threshold: float,
-) -> tuple[float, list[str]]:
-    """Strongest single configured-phrase match against this job, scaled by
-    field (title > description) and provenance tier. Adding more phrases to
-    `labeled_phrases` can only ever add candidates to compare against — it
-    can never lower the winning score, so configuring more (unrelated)
-    target titles never dilutes an exact match on one of them."""
-    scored: list[tuple[float, str]] = []
+) -> list[_PhraseScore]:
+    """Every configured phrase that matched this job at all, scaled by
+    field (title > description) and provenance tier, sorted strongest
+    first. Adding more phrases to `labeled_phrases` can only ever add
+    candidates to this list — it can never lower an existing entry's
+    score, so configuring more (unrelated) target titles never dilutes an
+    exact match on one of them."""
+    scored: list[_PhraseScore] = []
     for label, phrase in labeled_phrases:
         match = match_phrase(
             phrase,
@@ -174,15 +294,38 @@ def _best_phrase_match(
         field_factor = 1.0 if match.field == "title" else _DESCRIPTION_FIELD_DAMPING
         tier_weight = tier_weights.get(label, 1.0)
         score = match.strength * field_factor * tier_weight
-        detail = f"{label}:'{phrase}' field={match.field} method={match.method} score={score:.3f}"
-        scored.append((score, detail))
-    if not scored:
-        return 0.0, []
-    scored.sort(key=lambda item: item[0], reverse=True)
-    best_score, best_detail = scored[0]
-    evidence = [f"best_{evidence_label}_match:{best_detail}"]
-    evidence += [f"{evidence_label}_match:{detail}" for _, detail in scored[1:]]
-    return best_score, evidence
+        scored.append(
+            _PhraseScore(
+                label=label,
+                phrase=phrase,
+                field=match.field,
+                method=match.method,
+                strength=match.strength,
+                score=score,
+            )
+        )
+    scored.sort(key=lambda item: item.score, reverse=True)
+    return scored
+
+
+def _render_phrase_evidence(scores: list[_PhraseScore], evidence_label: str) -> list[str]:
+    """Human-readable rendering of `_best_phrase_match`'s structured
+    output — identical wording to the pre-D-034 inline formatting, kept as
+    its own step so the classification/aggregation logic reads the
+    structured `_PhraseScore` list directly rather than these strings."""
+    if not scores:
+        return []
+    best = scores[0]
+    evidence = [
+        f"best_{evidence_label}_match:{best.label}:'{best.phrase}' "
+        f"field={best.field} method={best.method} score={best.score:.3f}"
+    ]
+    evidence += [
+        f"{evidence_label}_match:{s.label}:'{s.phrase}' field={s.field} "
+        f"method={s.method} score={s.score:.3f}"
+        for s in scores[1:]
+    ]
+    return evidence
 
 
 def _title_role_family_component(
@@ -206,32 +349,40 @@ def _title_role_family_component(
         ("search_role_family", p) for p in search.role_families
     ] + [("candidate_role_family", p) for p in candidate.role_families]
 
-    title_score, title_evidence = _best_phrase_match(
+    title_scores = _best_phrase_match(
         title_phrases,
         _TITLE_TIER_WEIGHTS,
-        "title",
         title_norm=title_norm,
         title_tokens=title_tokens,
         description_norm=description_norm,
         coverage_threshold=coverage_threshold,
     )
-    role_score, role_evidence = _best_phrase_match(
+    role_scores = _best_phrase_match(
         role_phrases,
         _ROLE_FAMILY_TIER_WEIGHTS,
-        "role_family",
         title_norm=title_norm,
         title_tokens=title_tokens,
         description_norm=description_norm,
         coverage_threshold=coverage_threshold,
     )
 
-    raw = _combine_title_role_family(title_score, role_score)
+    title_score = title_scores[0].score if title_scores else 0.0
+    role_score = role_scores[0].score if role_scores else 0.0
+    role_alone_credit = _role_family_alone_credit(role_scores)
+    raw = _combine_title_role_family(title_score, role_score, role_alone_credit)
+
+    evidence_tier = _classify_evidence_tier(title_scores, role_scores)
+    evidence = [
+        *_render_phrase_evidence(title_scores, "title"),
+        *_render_phrase_evidence(role_scores, "role_family"),
+        f"active_search_intent_tier:{evidence_tier.value}",
+    ]
     return ScoreComponent(
         name="title_role_family",
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=[*title_evidence, *role_evidence],
+        evidence=evidence,
     )
 
 

@@ -542,33 +542,29 @@ condition — it can only add to the score, never by itself drop a job below a
 rejection line (Stage 1 is the only stage that rejects).
 
 **Best-match title/role-family scoring (decisions.md D-032, Parts 1–3;
-D-033)**: the original formula divided every matched phrase by the *entire*
-configured title/role-family vocabulary, which mechanically diluted an
-exact target-title match by however many *other* titles a profile happened
-to configure. `title_role_family`'s raw score is now
+D-033; D-034)**: the original formula divided every matched phrase by the
+*entire* configured title/role-family vocabulary, which mechanically
+diluted an exact target-title match by however many *other* titles a
+profile happened to configure. `title_role_family`'s raw score is now
 `max(best_title_match_strength, (best_title_match_strength +
-best_role_family_match_strength) / 2)` (`_combine_title_role_family`,
-D-033), where each "best match" is the single strongest configured phrase
-match — never an average or ratio over the full vocabulary, so configuring
-additional unrelated titles/role-families can never lower an existing
-exact match's score. Title strength is the primary signal: an exact title
-match alone keeps its full strength regardless of whether a separate
-role-family phrase also matched (the earlier unconditional
-`(title + role_family) / 2` average wrongly halved a title-only exact
-match down to 0.5), a role-family match *weaker than or equal to* the
-title match never drags the combined score down (the average then falls
-at or below title strength, so the `max()` keeps title strength
-unchanged), a role-family match *stronger* than the title match can raise
-the combined score above title alone, and role-family evidence with no
-title match at all still contributes at exactly half its own strength
-(unchanged from the pre-D-033 formula, which was already just
-`role_family_match_strength / 2` whenever there was no title evidence to
-average against). Matching itself reuses Stage 2's
-`matching.normalize.match_phrase` (exact normalised phrase, or
-token-coverage ≥ the same `PrefilterWeights.strong_title_coverage`
-threshold for multi-word phrases, now computed over each phrase's
-*meaningful* content tokens — connector/function words like "and"/"of"/
-"the" are excluded from both the numerator and denominator via
+best_role_family_match_strength) / 2, role_family_alone_credit)`
+(`_combine_title_role_family`, D-033/D-034), where each "best match" is the
+single strongest configured phrase match — never an average or ratio over
+the full vocabulary, so configuring additional unrelated titles/
+role-families can never lower an existing exact match's score. Title
+strength is the primary signal: an exact title match alone keeps its full
+strength regardless of whether a separate role-family phrase also matched
+(the pre-D-033 unconditional `(title + role_family) / 2` average wrongly
+halved a title-only exact match down to 0.5), a role-family match *weaker
+than or equal to* the title match never drags the combined score down (the
+average then falls at or below title strength, so the `max()` keeps title
+strength unchanged), and a role-family match *stronger* than the title
+match can raise the combined score above title alone. Matching itself
+reuses Stage 2's `matching.normalize.match_phrase` (exact normalised
+phrase, or token-coverage ≥ the same `PrefilterWeights.strong_title_coverage`
+threshold for multi-word phrases, computed over each phrase's *meaningful*
+content tokens — connector/function words like "and"/"of"/"the" are
+excluded from both the numerator and denominator via
 `matching.normalize.meaningful_tokens`, D-033 — so a connector word can no
 longer complete a multi-word phrase's coverage) — the same function in
 both stages, so a job that clears Stage 2 on token-coverage title evidence
@@ -582,7 +578,36 @@ provenance tier (an active `SearchProfile` signal —
 `CandidateProfile` signal of otherwise-equal match quality, and
 `CandidateProfile.previous_titles` ranks lowest of all, so a candidate's
 purely historical job titles cannot automatically outrank this run's actual
-search targets).
+search targets). D-034 lowered the `candidate_title_alias`/
+`candidate_previous_title` provenance tiers (0.85/0.7 → 0.55/0.4) — a
+candidate's own historical title vocabulary is supplemental evidence for
+this run's active ask, not a near-equivalent of it.
+
+**Role-family-alone credit and active-search-intent classification
+(decisions.md D-034)**: role-family evidence with no title match at all no
+longer contributes a flat `role_family_match_strength / 2` regardless of
+provenance. `_role_family_alone_credit` (`matching/scoring.py`) computes
+this credit independently for active (`SearchProfile.role_families`) and
+candidate-only (`CandidateProfile.role_families`) evidence: a single active
+role-family match now earns up to 0.70 of its own strength (substantial
+credit — this run's actual ask, just without a separately configured title
+phrase also matching), two or more *distinct* active role-family phrases
+matched in the job's *title* field (never a single incidental
+description-only mention) reinforce that credit to up to 0.85, and
+candidate-only role-family evidence keeps its pre-existing 0.5 factor
+unchanged — so active role-family-only evidence now strictly outranks
+candidate-only role-family-only evidence of equal match strength, and two
+reinforcing active matches outrank one. This credit only ever participates
+in the `max()` above, so it can raise the combined score but never lower an
+existing title or averaged score (Part 2 requirement 5 of the audit this
+fix implements). Alongside this, `_classify_evidence_tier` derives a small
+internal classification — `active_target_title` / `active_title_alias` /
+`active_role_family` / `candidate_history_only` /
+`no_title_or_role_evidence` — directly from the same structured phrase-match
+data (never by re-parsing rendered evidence text) and records it in
+`title_role_family`'s own evidence as `active_search_intent_tier:<value>`;
+it is a transparency label, not a new public `ScoreComponent` or schema
+field.
 
 **Search-profile-aware skill scoring (decisions.md D-032, Part 4)**:
 `required_skills` and `transferable_skills` are no longer
