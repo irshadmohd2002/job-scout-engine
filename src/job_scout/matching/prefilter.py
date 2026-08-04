@@ -28,7 +28,7 @@ industries/sectors into the weighted fallback score, never the strong gate.
 from __future__ import annotations
 
 from job_scout.config import ScoringWeights
-from job_scout.matching.normalize import dedupe_preserve_order, normalize_text
+from job_scout.matching.normalize import dedupe_preserve_order, match_phrase, normalize_text
 from job_scout.models import CandidateProfile, Job, PrefilterResult, SearchProfile
 
 
@@ -124,14 +124,6 @@ def _category_raw(
     return min(raw, 1.0), in_title, description_only
 
 
-def _phrase_token_coverage(phrase_norm: str, title_tokens: set[str]) -> float:
-    tokens = phrase_norm.split(" ")
-    if not tokens:
-        return 0.0
-    matched = sum(1 for token in tokens if token in title_tokens)
-    return matched / len(tokens)
-
-
 def _strong_title_matches(
     labeled_phrases: list[tuple[str, str]],
     title_norm: str,
@@ -141,6 +133,13 @@ def _strong_title_matches(
     """Evidence strings for every configured phrase that strongly matches
     the job *title* — never the description; per the strong-gate design,
     only title-field evidence is allowed to pass a job on a single signal.
+
+    Delegates the actual phrase-vs-title matching to
+    `matching.normalize.match_phrase` (`description_norm=""` disables its
+    description fallback, since the strong gate only ever considers the
+    title field) — the same function Stage 5's best-match title/role-family
+    scoring uses (matching/scoring.py), so a job cannot pass this gate on
+    evidence Stage 5 doesn't also recognise.
 
     A phrase counts as a strong match if either:
       - its full normalised form is a contiguous substring of the
@@ -158,19 +157,21 @@ def _strong_title_matches(
     """
     evidence: list[str] = []
     for label, phrase in labeled_phrases:
-        phrase_norm = normalize_text(phrase)
-        if not phrase_norm:
-            continue
-        if phrase_norm in title_norm:
+        match = match_phrase(
+            phrase,
+            title_norm=title_norm,
+            title_tokens=title_tokens,
+            description_norm="",
+            coverage_threshold=coverage_threshold,
+        )
+        if match.method == "exact_phrase":
             evidence.append(
                 f"strong_title_match:{label}:'{phrase}' field=title method=exact_phrase"
             )
-            continue
-        coverage = _phrase_token_coverage(phrase_norm, title_tokens)
-        if coverage >= coverage_threshold:
+        elif match.method == "token_coverage":
             evidence.append(
                 f"strong_title_match:{label}:'{phrase}' field=title "
-                f"method=token_coverage coverage={coverage:.2f}"
+                f"method=token_coverage coverage={match.strength:.2f}"
             )
     return evidence
 

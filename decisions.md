@@ -653,4 +653,96 @@ never a hard-coded list) and keeps the country/source concerns properly
 separated: which countries a *candidate* wants is profile data; which
 countries a *source* can actually serve is registry data; the planner's
 existing intersection logic is what's supposed to reconcile the two, and
+
+### D-032: Stage 5 final-scoring calibration fix — best-match title/role
+scoring, search-profile-aware skills, real sector relevance, no
+unconditional score floor
+**Decision**: Following a deterministic audit of a live run (150 jobs
+fetched, 25 scored, relevant strategy roles clustering at 15–21 with weak
+data/clinical/trainee roles scoring within 1–5 points of them), rewrote
+`matching/scoring.py`'s component formulas — weights and component names
+unchanged, so no `scoring_weights.yaml` schema change:
+1. **Title/role-family** (Part 1/2): replaced `matches / total configured
+   vocabulary` with a best-single-match strength (`_best_phrase_match`),
+   scaled by field (title > description) and provenance tier (active
+   SearchProfile signal > CandidateProfile signal > CandidateProfile
+   `previous_titles`). Configuring more target titles can no longer dilute
+   an existing exact match — the winning match's score only ever depends on
+   itself, not on how many other (non-matching) phrases exist.
+2. **Stage 2/5 consistency** (Part 3): both stages now call the same
+   `matching.normalize.match_phrase` (moved out of `prefilter.py`'s
+   previously module-private `_phrase_token_coverage`/inline exact-match
+   logic). A job can no longer pass Stage 2's strong-title gate on
+   token-coverage evidence and then score zero Stage 5 title credit for
+   that identical evidence (the live-audit's Equifax/JAGGAER/Michael Page
+   cases — token-coverage-only title matches that previously fell through
+   to Stage 5's exact-substring-only matching and landed on the score
+   floor).
+3. **Search-profile-aware skills** (Part 4): `required_skills` and
+   `transferable_skills` now read `SearchProfile.required_skills`/
+   `preferred_skills`+`transferable_skills` as the primary signal, with the
+   corresponding `CandidateProfile` fields as supplemental (when a
+   search-profile signal exists) or a capped fallback (when it doesn't) —
+   `_SUPPLEMENTAL_CANDIDATE_SKILL_WEIGHT`/`_FALLBACK_CANDIDATE_SKILL_WEIGHT`.
+   `responsibilities` (which has no SearchProfile-side field to draw a
+   primary signal from) is always treated as fallback-only, at the same
+   reduced weight, using the same capped-denominator `_bounded_coverage`
+   Part 1/2 use for titles — otherwise candidate-history-only signal
+   spread across three components could still out-score a bare exact-title
+   match (verified by
+   `test_generic_candidate_skill_overlap_does_not_outrank_exact_title_match`).
+4. **Sector/industry relevance** (Part 5): `_sector_relevance_component`
+   was hard-coded to always return neutral 0.5, with a code comment
+   claiming "no sector field exists on CandidateProfile or SearchProfile
+   yet" — stale since Milestone 1.1 added exactly those fields
+   (`industries`/`sectors`/`included_industries`/`included_sectors`/
+   `excluded_industries`/`excluded_sectors`). Now reads them, matched via a
+   new word-boundary-safe `contains_phrase_tokens` (token-sequence
+   containment, not substring containment) so a short configured term (the
+   live audit's "ai" matching inside "Trainee") can't false-positive.
+   `search.excluded_industries`/`excluded_sectors` reduce the component
+   (never a hard rejection from here — that only happens at Stage 1 when
+   the profile's own `hard_filters` toggle is on).
+5. **No unconditional score floor** (Part 6): `seniority_experience`,
+   `sector_relevance`, `education`, `visa_relocation` no longer default to
+   neutral 0.5 when no evidence exists — they default to 0
+   (`not_evaluable`, always recorded in evidence). This was the direct
+   cause of the audit's flat 15-point floor (0.10+0.10+0.05+0.05 weight ×
+   0.5 raw = 0.15 for every job, confirmed against three live jobs that
+   scored exactly 15.00 with zero evidence in every other component too).
+   `sector_relevance` keeps 0.5 for the one case Part 5 explicitly
+   documents as genuinely neutral: nothing configured at all (as opposed to
+   "configured but no evidence found," which is 0). `final_score` is
+   clamped to `[0, 100]` in `build_match_result` since negative-evidence
+   components (seniority mismatch, explicit no-sponsorship) can now push
+   the raw weighted sum below zero.
+6. **Entry-level seniority safeguard** (Part 7): a small hard-coded,
+   generic (not profession-specific) list — trainee, graduate, internship,
+   intern, junior, entry level — matched word-boundary-safe against the
+   job text. Fires only when `SearchProfile.min_experience_years >= 3`
+   (this run targets an experienced hire; a threshold on existing
+   configuration, not an invented rule), giving `seniority_experience`
+   explicit negative evidence rather than neutral "no evidence."
+**Alternatives**: Renormalising component weights when a component is
+`not_evaluable` (rejected — the task scope explicitly asked for the
+smallest correction that preserves transparency; weight renormalisation is
+a bigger behavioural change than "no evidence contributes zero," and
+`scoring_weights.yaml`'s existing "weights sum to 1.0" contract would need
+new documentation either way). Excluding
+`CandidateProfile.excluded_industries`/`excluded_role_families` from the
+sector-relevance soft-negative vocabulary was deliberate, not an oversight
+— those already reject unconditionally at Stage 1 whenever non-empty, so a
+job matching them can never reach Stage 5 to begin with; including them
+here would be dead code. Changing `notification_thresholds` (85/70) or
+Adzuna's `what_or` query construction were both explicitly out of scope for
+this task and untouched.
+**Why**: Matches CLAUDE.md hard constraint 10 (profession-agnostic — every
+new signal is an existing `CandidateProfile`/`SearchProfile` field, no new
+profession-specific keyword) and hard constraint 5 (every component still
+carries its evidence). Confirmed against the audit's own strong/weak
+examples: `test_strong_strategy_group_outranks_weak_data_and_trainee_group`
+asserts the full strong-vs-weak ranking inversion the audit's live data
+exhibited is now corrected under a synthetic profile shaped like the real
+one (no dependency on the user's private database or config files, per
+this task's explicit instruction).
 this incident is exactly the case it exists for.

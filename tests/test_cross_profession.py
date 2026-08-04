@@ -263,8 +263,13 @@ def test_mba_has_no_special_value_for_software_engineer_profile(tmp_path: Path) 
         c for c in compute_score_components(without_mba, candidate, search, weights)
         if c.name == "education"
     )
-    assert education_with_mba.raw_value == 0.5
-    assert education_without_mba.raw_value == 0.5
+    # Part 6 of the scoring calibration fix (decisions.md D-032): no
+    # education/qualification configured on this candidate at all -> zero,
+    # not_evaluable, not an automatic positive 0.5 — but still identical
+    # regardless of whether the job happens to mention "MBA", since this
+    # profile has no education signal to evaluate that mention against.
+    assert education_with_mba.raw_value == 0.0
+    assert education_without_mba.raw_value == 0.0
     assert education_with_mba.raw_value == education_without_mba.raw_value
 
 

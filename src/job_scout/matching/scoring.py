@@ -9,6 +9,16 @@ Deterministic keyword/phrase-overlap proxies stand in for the Stage 3
 (semantic) / Stage 4 (LLM) components this table will eventually use
 (decisions.md D-007); the component *slots* and weights already match the
 final shape so a later milestone upgrades a computation, not the schema.
+
+Scoring calibration fix (decisions.md D-032): the formulas below replaced an
+earlier version that divided every match by the *entire* configured
+vocabulary size, which diluted an exact target-title match in proportion to
+how many other titles happened to be configured, and defaulted four
+components (seniority, sector, education, visa) to a neutral 0.5 whenever no
+evidence existed at all — producing a flat, unconditional 15-point score
+floor for every job that cleared Stage 2, regardless of relevance. See the
+per-component docstrings below for the replacement formula; architecture.md
+section 10 documents the same contract at the table level.
 """
 
 from __future__ import annotations
@@ -17,8 +27,14 @@ import re
 
 from job_scout.config import ScoringWeights
 from job_scout.matching.hard_filters import parse_experience_range
-from job_scout.matching.normalize import dedupe_preserve_order
-from job_scout.matching.prefilter import keyword_overlap
+from job_scout.matching.normalize import (
+    contains_phrase_tokens,
+    dedupe_preserve_order,
+    match_phrase,
+    normalize_text,
+    normalize_tokens,
+)
+from job_scout.matching.prefilter import PrefilterWeights, keyword_overlap
 from job_scout.models import (
     CandidateProfile,
     HardFilterResult,
@@ -60,47 +76,169 @@ def _first_match(patterns: list[re.Pattern[str]], text: str) -> str | None:
     return None
 
 
+# --- Part 1/2: best-match title and role-family scoring --------------------
+#
+# Replaces the earlier "matches / total configured vocabulary" ratio, which
+# mechanically punished a job for an exact title match by however many
+# *other* target titles the profile author happened to configure. The raw
+# score is now the single strongest configured phrase match (never diluted
+# by unrelated additional phrases), weighted by:
+#   - field: a title-field match always outweighs a description-only match
+#     (_DESCRIPTION_FIELD_DAMPING), consistent with the Stage 2 pre-filter's
+#     own title-vs-description weighting and with the truncated-description
+#     reality documented in architecture.md section 3.
+#   - provenance tier: an active SearchProfile signal (this run's actual
+#     ask) outranks a CandidateProfile signal of the same match quality,
+#     and a candidate's *historical* previous_titles rank lowest of all —
+#     "generic historical titles must not automatically outrank active
+#     search-profile targets."
+# Matching itself (exact normalised phrase, or token-coverage for
+# multi-word phrases) is `matching.normalize.match_phrase` — the same
+# function the Stage 2 strong-title gate uses, so Stage 5 never scores zero
+# for evidence that already passed Stage 2 (Part 3 of the fix).
+
+_DESCRIPTION_FIELD_DAMPING = 0.5
+# Mirrors PrefilterWeights.desc_only_damping's default — title-field
+# evidence is preferred over description-only evidence in both stages.
+
+_TITLE_TIER_WEIGHTS: dict[str, float] = {
+    "search_target_title": 1.0,
+    "search_title_alias": 1.0,
+    "candidate_title_alias": 0.85,
+    "candidate_previous_title": 0.7,
+}
+_ROLE_FAMILY_TIER_WEIGHTS: dict[str, float] = {
+    "search_role_family": 1.0,
+    "candidate_role_family": 0.85,
+}
+
+
+def _best_phrase_match(
+    labeled_phrases: list[tuple[str, str]],
+    tier_weights: dict[str, float],
+    evidence_label: str,
+    *,
+    title_norm: str,
+    title_tokens: set[str],
+    description_norm: str,
+    coverage_threshold: float,
+) -> tuple[float, list[str]]:
+    """Strongest single configured-phrase match against this job, scaled by
+    field (title > description) and provenance tier. Adding more phrases to
+    `labeled_phrases` can only ever add candidates to compare against — it
+    can never lower the winning score, so configuring more (unrelated)
+    target titles never dilutes an exact match on one of them."""
+    scored: list[tuple[float, str]] = []
+    for label, phrase in labeled_phrases:
+        match = match_phrase(
+            phrase,
+            title_norm=title_norm,
+            title_tokens=title_tokens,
+            description_norm=description_norm,
+            coverage_threshold=coverage_threshold,
+        )
+        if match.method == "none":
+            continue
+        field_factor = 1.0 if match.field == "title" else _DESCRIPTION_FIELD_DAMPING
+        tier_weight = tier_weights.get(label, 1.0)
+        score = match.strength * field_factor * tier_weight
+        detail = f"{label}:'{phrase}' field={match.field} method={match.method} score={score:.3f}"
+        scored.append((score, detail))
+    if not scored:
+        return 0.0, []
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_detail = scored[0]
+    evidence = [f"best_{evidence_label}_match:{best_detail}"]
+    evidence += [f"{evidence_label}_match:{detail}" for _, detail in scored[1:]]
+    return best_score, evidence
+
+
 def _title_role_family_component(
-    job: Job, candidate: CandidateProfile, search: SearchProfile, weight: float
+    job: Job,
+    candidate: CandidateProfile,
+    search: SearchProfile,
+    weight: float,
+    coverage_threshold: float,
 ) -> ScoreComponent:
-    # Milestone 1.1: the title/role universe is candidate-profile *and*
-    # search-profile signals — a job that reached Stage 5 on the strength of
-    # a SearchProfile.target_titles match (Stage 2's strong-gate) must not
-    # have that evidence silently dropped here (see the prefilter/scoring
-    # consistency requirement this component was extended for).
-    combined_text = f"{job.title} {job.description_text}"
-    candidate_title_matches = keyword_overlap(candidate.title_aliases, combined_text)
-    search_target_title_matches = keyword_overlap(search.target_titles, combined_text)
-    search_title_alias_matches = keyword_overlap(search.title_aliases, combined_text)
-    candidate_role_matches = keyword_overlap(candidate.role_families, combined_text)
-    search_role_matches = keyword_overlap(search.role_families, combined_text)
+    title_norm = normalize_text(job.title)
+    description_norm = normalize_text(job.description_text)
+    title_tokens = set(title_norm.split(" ")) if title_norm else set()
 
-    title_universe = dedupe_preserve_order(
-        [*candidate.title_aliases, *search.target_titles, *search.title_aliases]
+    title_phrases: list[tuple[str, str]] = (
+        [("search_target_title", p) for p in search.target_titles]
+        + [("search_title_alias", p) for p in search.title_aliases]
+        + [("candidate_title_alias", p) for p in candidate.title_aliases]
+        + [("candidate_previous_title", p) for p in candidate.previous_titles]
     )
-    role_universe = dedupe_preserve_order([*candidate.role_families, *search.role_families])
-    title_matches = dedupe_preserve_order(
-        [*candidate_title_matches, *search_target_title_matches, *search_title_alias_matches]
-    )
-    role_matches = dedupe_preserve_order([*candidate_role_matches, *search_role_matches])
+    role_phrases: list[tuple[str, str]] = [
+        ("search_role_family", p) for p in search.role_families
+    ] + [("candidate_role_family", p) for p in candidate.role_families]
 
-    title_ratio = len(title_matches) / len(title_universe) if title_universe else 0.0
-    role_ratio = len(role_matches) / len(role_universe) if role_universe else 0.0
-    raw = (title_ratio + role_ratio) / 2
-    evidence = (
-        [f"title_alias:{m}" for m in candidate_title_matches]
-        + [f"search_target_title:{m}" for m in search_target_title_matches]
-        + [f"search_title_alias:{m}" for m in search_title_alias_matches]
-        + [f"role_family:{m}" for m in candidate_role_matches]
-        + [f"search_role_family:{m}" for m in search_role_matches]
+    title_score, title_evidence = _best_phrase_match(
+        title_phrases,
+        _TITLE_TIER_WEIGHTS,
+        "title",
+        title_norm=title_norm,
+        title_tokens=title_tokens,
+        description_norm=description_norm,
+        coverage_threshold=coverage_threshold,
     )
+    role_score, role_evidence = _best_phrase_match(
+        role_phrases,
+        _ROLE_FAMILY_TIER_WEIGHTS,
+        "role_family",
+        title_norm=title_norm,
+        title_tokens=title_tokens,
+        description_norm=description_norm,
+        coverage_threshold=coverage_threshold,
+    )
+
+    raw = (title_score + role_score) / 2
     return ScoreComponent(
         name="title_role_family",
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=evidence,
+        evidence=[*title_evidence, *role_evidence],
     )
+
+
+# --- Part 4: search-profile-aware skill scoring -----------------------------
+#
+# Required/preferred skill signals are no longer candidate-history-only.
+# SearchProfile's own required_skills/preferred_skills (this run's actual
+# ask) are the primary signal; CandidateProfile's general primary_skills/
+# secondary_skills/transferable_skills are supplemental support when a
+# search-profile signal exists, or a capped lower-priority fallback when it
+# doesn't — so generic historical overlap alone can never earn as much as a
+# genuine search-specific match, and can't by itself out-score an exact
+# title match. `_bounded_coverage` also replaces plain
+# matches/len(vocabulary) division with a capped denominator, so a real
+# signal (a few configured skills actually mentioned) isn't diluted by how
+# many *other* skills happen to be configured — the same "don't divide by
+# the whole vocabulary" principle Part 1/2 apply to titles/role families.
+# `responsibilities` (below) reuses the same fallback weight/denominator,
+# since SearchProfile has no "responsibilities" field of its own — that
+# component is *always* candidate-history-only, so it must always be
+# damped the same way required_skills/transferable_skills are when they
+# have no search-specific signal to draw on either.
+
+_SKILL_COVERAGE_CAP = 3
+_SUPPLEMENTAL_CANDIDATE_SKILL_WEIGHT = 0.3
+_FALLBACK_CANDIDATE_SKILL_WEIGHT = 0.2
+# Deliberately small: candidate-history-only signal is spread across three
+# components (responsibilities, required_skills, transferable_skills) when
+# no search-specific skill/requirement is configured, and their combined
+# contribution must stay below a single bare exact-title-only match's
+# contribution (title_role_family's minimum positive raw of 0.5, weight
+# 0.25 -> 0.125) — see the regression test asserting this in test_scoring.py.
+
+
+def _bounded_coverage(matches: list[str], vocabulary: list[str]) -> float:
+    if not vocabulary:
+        return 0.0
+    denominator = min(len(vocabulary), _SKILL_COVERAGE_CAP)
+    return min(1.0, len(matches) / denominator)
 
 
 def _responsibilities_component(
@@ -110,9 +248,13 @@ def _responsibilities_component(
     # description body only (not the title) — a deliberately different
     # signal from the title/role component above (architecture.md section
     # 10, Stage 5, "Responsibilities match ... proxy until Stage 3/4 exist").
-    vocabulary = [*candidate.role_families, *candidate.primary_skills]
+    # Always candidate-history-only (see module note above) -> always scored
+    # at the fallback weight, using the same bounded-coverage denominator
+    # Part 1/2 apply to titles/role families.
+    vocabulary = dedupe_preserve_order([*candidate.role_families, *candidate.primary_skills])
     matches = keyword_overlap(vocabulary, job.description_text)
-    raw = len(matches) / len(vocabulary) if vocabulary else 0.0
+    coverage = _bounded_coverage(matches, vocabulary)
+    raw = _FALLBACK_CANDIDATE_SKILL_WEIGHT * coverage
     return ScoreComponent(
         name="responsibilities",
         weight=weight,
@@ -123,40 +265,116 @@ def _responsibilities_component(
 
 
 def _required_skills_component(
-    job: Job, candidate: CandidateProfile, weight: float
+    job: Job, candidate: CandidateProfile, search: SearchProfile, weight: float
 ) -> ScoreComponent:
     combined_text = f"{job.title} {job.description_text}"
-    matches = keyword_overlap(candidate.primary_skills, combined_text)
-    raw = len(matches) / len(candidate.primary_skills) if candidate.primary_skills else 0.0
+    search_matches = keyword_overlap(search.required_skills, combined_text)
+    candidate_matches = keyword_overlap(candidate.primary_skills, combined_text)
+    search_score = _bounded_coverage(search_matches, search.required_skills)
+    candidate_score = _bounded_coverage(candidate_matches, candidate.primary_skills)
+
+    if search.required_skills:
+        # search.required_skills is this run's actual ask; candidate.primary_skills
+        # is supplemental support only, at reduced weight (Part 4: "search-required
+        # skills should carry more importance than generic candidate-history skills").
+        raw = min(1.0, search_score + _SUPPLEMENTAL_CANDIDATE_SKILL_WEIGHT * candidate_score)
+    else:
+        # No search-specific requirement configured for this run -> fall back to
+        # candidate.primary_skills, capped below what a genuine search-required
+        # match would earn (Part 4: "lower-priority fallback").
+        raw = _FALLBACK_CANDIDATE_SKILL_WEIGHT * candidate_score
+
+    evidence = [f"search_required_skill:{m}" for m in search_matches]
+    evidence += [f"candidate_primary_skill:{m}" for m in candidate_matches]
     return ScoreComponent(
         name="required_skills",
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=[f"primary_skill:{m}" for m in matches],
+        evidence=evidence,
     )
 
 
 def _transferable_skills_component(
-    job: Job, candidate: CandidateProfile, weight: float
+    job: Job, candidate: CandidateProfile, search: SearchProfile, weight: float
 ) -> ScoreComponent:
     combined_text = f"{job.title} {job.description_text}"
-    # Milestone 1.1: candidate.transferable_skills (generic, new) is combined
-    # with secondary_skills (Milestone 1's original "nice to have" list) —
-    # both are soft signal for the same component, never a gate.
-    universe = [*candidate.secondary_skills, *candidate.transferable_skills]
-    matches = keyword_overlap(universe, combined_text)
-    raw = len(matches) / len(universe) if universe else 0.0
-    # Soft overlap only — per D-005/architecture.md, a missing secondary/
-    # transferable skill can never by itself drop a job below a rejection
-    # line; this component only ever adds to the score, it is not a gate.
+    search_vocab = dedupe_preserve_order([*search.preferred_skills, *search.transferable_skills])
+    candidate_vocab = dedupe_preserve_order(
+        [*candidate.secondary_skills, *candidate.transferable_skills]
+    )
+    search_matches = keyword_overlap(search_vocab, combined_text)
+    candidate_matches = keyword_overlap(candidate_vocab, combined_text)
+    search_score = _bounded_coverage(search_matches, search_vocab)
+    candidate_score = _bounded_coverage(candidate_matches, candidate_vocab)
+
+    if search_vocab:
+        # search.preferred_skills/transferable_skills is this run's stated
+        # preference; candidate history is supplemental (Part 4: "search
+        # preferred skill match should contribute positively but less than
+        # required skill" — this component's weight is already half of
+        # required_skills', reinforcing that at the config level too).
+        raw = min(1.0, search_score + _SUPPLEMENTAL_CANDIDATE_SKILL_WEIGHT * candidate_score)
+    else:
+        raw = _FALLBACK_CANDIDATE_SKILL_WEIGHT * candidate_score
+
+    evidence = [f"search_preferred_skill:{m}" for m in search_matches]
+    evidence += [f"candidate_transferable_skill:{m}" for m in candidate_matches]
     return ScoreComponent(
         name="transferable_skills",
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=[f"transferable_skill:{m}" for m in matches],
+        evidence=evidence,
     )
+
+
+# --- Part 7: generic, profession-agnostic entry-level seniority safeguard --
+
+_ENTRY_LEVEL_TERMS = ["trainee", "graduate", "internship", "intern", "junior", "entry level"]
+# Generic seniority-level markers, not profession vocabulary — every
+# profession has trainee/graduate/junior roles, so this is a structural
+# employment-level signal, not the kind of profession-specific keyword
+# CLAUDE.md hard constraint 10 forbids hard-coding (the same category as the
+# existing generic citizenship/clearance/no-sponsorship phrase lists in
+# matching/hard_filters.py). Detected with word-boundary-safe token matching
+# (`contains_phrase_tokens`) so a short term never matches inside an
+# unrelated longer word.
+
+_SENIOR_SEARCH_MIN_YEARS_THRESHOLD = 3.0
+# A search profile asking for at least this many years is treated as
+# targeting an experienced/senior hire. Deterministic and config-driven —
+# SearchProfile.min_experience_years already encodes exactly this, so this
+# is a threshold on existing configuration, not a new profession-specific
+# rule invented for this fix.
+
+
+def _detect_entry_level_mismatch(job: Job, search: SearchProfile) -> str | None:
+    if (
+        search.min_experience_years is None
+        or search.min_experience_years < _SENIOR_SEARCH_MIN_YEARS_THRESHOLD
+    ):
+        return None
+    combined_tokens = normalize_tokens(f"{job.title} {job.description_text}")
+    for term in _ENTRY_LEVEL_TERMS:
+        if contains_phrase_tokens(combined_tokens, normalize_tokens(term)):
+            return term
+    return None
+
+
+# --- Part 6: no unconditional positive floor --------------------------------
+#
+# seniority_experience, sector_relevance, education, and visa_relocation
+# used to default to a neutral raw_value of 0.5 whenever no evidence existed
+# at all, which — combined across these four components' weights — gave
+# every job that cleared Stage 2 an unconditional 15-point score floor
+# regardless of relevance. "No evidence" now defaults to 0.0 (recorded as
+# `not_evaluable` in the evidence list) in every component below; a
+# genuine positive match still scores positively, and (for
+# seniority_experience/visa_relocation, where an explicit negative signal is
+# deterministically detectable) genuine negative evidence can now pull the
+# component below zero rather than only ever sitting at the same neutral
+# value as "no evidence found" would.
 
 
 def _seniority_experience_component(
@@ -166,13 +384,22 @@ def _seniority_experience_component(
     seniority_matched = seniority_term is not None and seniority_term.lower() in (
         job.description_text.lower()
     )
-    # No seniority configured at all -> neutral, same as "no match found"
-    # (documented neutral fallback per Milestone 1.1's education-component
-    # rule below — see decisions.md D-017).
-    seniority_raw = 1.0 if seniority_matched else 0.5
+    entry_level_term = None if seniority_matched else _detect_entry_level_mismatch(job, search)
+
+    if seniority_matched:
+        seniority_raw = 1.0
+        seniority_evidence = [f"seniority:{seniority_term}"]
+    elif entry_level_term is not None:
+        # Explicit mismatch: an entry-level-worded job against a search
+        # profile targeting experienced hires (Part 7) -> negative, not just
+        # "no evidence" neutral, so it can genuinely lower a weak role's score.
+        seniority_raw = -1.0
+        seniority_evidence = [f"seniority_mismatch:{entry_level_term}"]
+    else:
+        seniority_raw = 0.0
+        seniority_evidence = ["not_evaluable:no_seniority_evidence_found"]
 
     parsed_range = parse_experience_range(job.description_text)
-    evidence = [f"seniority:{seniority_term}"] if seniority_matched and seniority_term else []
     if (
         parsed_range is not None
         and search.min_experience_years is not None
@@ -180,10 +407,15 @@ def _seniority_experience_component(
     ):
         job_min, job_max = parsed_range
         overlap = job_min <= search.max_experience_years and job_max >= search.min_experience_years
+        # A non-overlapping parsed range is already rejected at Stage 1
+        # (hard_filters.py::evaluate_hard_filters) whenever both min/max are
+        # configured, so `overlap` is always True for any job that reaches
+        # here — this branch stays defensive rather than assuming that.
         experience_raw = 1.0 if overlap else 0.0
-        evidence.append(f"experience_range:{job_min:g}-{job_max:g} years")
+        experience_evidence = [f"experience_range:{job_min:g}-{job_max:g} years"]
     else:
-        experience_raw = 0.5  # unparseable -> neutral, consistent with R-3's fail-open stance
+        experience_raw = 0.0
+        experience_evidence = ["not_evaluable:no_parseable_experience_range"]
 
     raw = (seniority_raw + experience_raw) / 2
     return ScoreComponent(
@@ -191,19 +423,75 @@ def _seniority_experience_component(
         weight=weight,
         raw_value=raw,
         weighted_value=weight * raw,
-        evidence=evidence,
+        evidence=[*seniority_evidence, *experience_evidence],
     )
 
 
-def _sector_relevance_component(weight: float) -> ScoreComponent:
-    # Always neutral in M1: no sector field exists on CandidateProfile or
-    # SearchProfile yet (architecture.md section 6 cold-start default).
+# --- Part 5: real sector/industry relevance ---------------------------------
+
+
+def _sector_relevance_component(
+    job: Job, candidate: CandidateProfile, search: SearchProfile, weight: float
+) -> ScoreComponent:
+    included = dedupe_preserve_order(
+        [
+            *candidate.industries,
+            *candidate.sectors,
+            *search.included_industries,
+            *search.included_sectors,
+        ]
+    )
+    # candidate.excluded_industries and search.excluded_industries/
+    # excluded_sectors *without* their hard_filters toggle enabled are the
+    # only excluded-industry/sector signals that can ever reach Stage 5:
+    # candidate.excluded_industries rejects unconditionally at Stage 1
+    # whenever non-empty (hard_filters.py), so a job matching it can never
+    # get here — only search.excluded_industries/excluded_sectors (opt-in
+    # via HardFilterToggles, decisions.md D-025) can still be present.
+    excluded = dedupe_preserve_order([*search.excluded_industries, *search.excluded_sectors])
+
+    if not included and not excluded:
+        # No industry/sector preference configured anywhere -> genuinely
+        # neutral (not "no evidence found" — there is nothing to evaluate
+        # against at all), per Part 5's documented neutral-value rule.
+        return ScoreComponent(
+            name="sector_relevance",
+            weight=weight,
+            raw_value=0.5,
+            weighted_value=weight * 0.5,
+            evidence=["not_evaluable:no_industry_or_sector_preference_configured"],
+        )
+
+    text_tokens = normalize_tokens(f"{job.title} {job.description_text}")
+    included_matches = [
+        term for term in included if contains_phrase_tokens(text_tokens, normalize_tokens(term))
+    ]
+    excluded_matches = [
+        term for term in excluded if contains_phrase_tokens(text_tokens, normalize_tokens(term))
+    ]
+
+    if included_matches and not excluded_matches:
+        raw = 1.0
+    elif included_matches and excluded_matches:
+        raw = 0.5  # mixed signal: matched both a wanted and an unwanted industry/sector
+    elif excluded_matches:
+        raw = 0.0  # excluded-only: reduces the component, never a hard rejection here
+    else:
+        # Preferences ARE configured but nothing was detected in this job's
+        # text -> not_evaluable, never an automatic positive point (Part 6).
+        raw = 0.0
+
+    evidence = [f"included_industry_or_sector:{m}" for m in included_matches]
+    evidence += [f"excluded_industry_or_sector:{m}" for m in excluded_matches]
+    if not evidence:
+        evidence = ["not_evaluable:no_matching_evidence_found"]
+
     return ScoreComponent(
         name="sector_relevance",
         weight=weight,
-        raw_value=0.5,
-        weighted_value=weight * 0.5,
-        evidence=[],
+        raw_value=raw,
+        weighted_value=weight * raw,
+        evidence=evidence,
     )
 
 
@@ -223,19 +511,30 @@ def _education_component(job: Job, candidate: CandidateProfile, weight: float) -
         *candidate.licences,
     ]
     if not vocabulary:
-        # Nothing configured to evaluate against -> documented neutral, not
-        # a profession-specific fallback (decisions.md D-017).
+        # Nothing configured to evaluate against -> not_evaluable, zero, not
+        # a positive default (Part 6 removes the earlier neutral-0.5 floor).
         return ScoreComponent(
-            name="education", weight=weight, raw_value=0.5, weighted_value=weight * 0.5, evidence=[]
+            name="education",
+            weight=weight,
+            raw_value=0.0,
+            weighted_value=0.0,
+            evidence=["not_evaluable:no_education_or_qualification_configured"],
         )
     matches = keyword_overlap(vocabulary, combined_text)
-    raw = 1.0 if matches else 0.5  # no evidence either way -> neutral
+    if matches:
+        return ScoreComponent(
+            name="education",
+            weight=weight,
+            raw_value=1.0,
+            weighted_value=weight * 1.0,
+            evidence=[f"education_match:{m}" for m in matches],
+        )
     return ScoreComponent(
         name="education",
         weight=weight,
-        raw_value=raw,
-        weighted_value=weight * raw,
-        evidence=[f"education_match:{m}" for m in matches],
+        raw_value=0.0,
+        weighted_value=0.0,
+        evidence=["not_evaluable:no_matching_evidence_found"],
     )
 
 
@@ -252,21 +551,23 @@ def _visa_relocation_component(job: Job, weight: float) -> ScoreComponent:
         )
     negative = _first_match(_VISA_NEGATIVE_PATTERNS, text)
     if negative:
+        # Explicit negative evidence, not just "no evidence" neutral (Part
+        # 6) -> pulls the component below the not_evaluable baseline.
         return ScoreComponent(
             name="visa_relocation",
             weight=weight,
-            raw_value=0.0,
-            weighted_value=0.0,
-            evidence=[negative],
+            raw_value=-1.0,
+            weighted_value=weight * -1.0,
+            evidence=[f"negative:{negative}"],
         )
-    # No evidence either way -> unknown (risk R-4: expect a lot of "unknown"
-    # without sponsor-registry enrichment, which is out of scope for M1).
+    # No evidence either way -> not_evaluable, zero (risk R-4: expect a lot
+    # of these without sponsor-registry enrichment, which is out of scope).
     return ScoreComponent(
         name="visa_relocation",
         weight=weight,
-        raw_value=0.5,
-        weighted_value=weight * 0.5,
-        evidence=[],
+        raw_value=0.0,
+        weighted_value=0.0,
+        evidence=["not_evaluable:no_visa_or_relocation_language_found"],
     )
 
 
@@ -274,13 +575,21 @@ def compute_score_components(
     job: Job, candidate: CandidateProfile, search: SearchProfile, weights: ScoringWeights
 ) -> list[ScoreComponent]:
     w = weights
+    # Part 3: Stage 5's title/role-family matching reuses the exact same
+    # coverage threshold Stage 2's strong gate used for this run (both are
+    # derived from the same ScoringWeights via PrefilterWeights), so a job
+    # that passed Stage 2 on token-coverage title evidence gets equivalent
+    # credit here rather than silently scoring zero for that evidence.
+    coverage_threshold = PrefilterWeights.from_scoring_weights(weights).strong_title_coverage
     return [
-        _title_role_family_component(job, candidate, search, w.title_role_family),
+        _title_role_family_component(
+            job, candidate, search, w.title_role_family, coverage_threshold
+        ),
         _responsibilities_component(job, candidate, w.responsibilities),
-        _required_skills_component(job, candidate, w.required_skills),
-        _transferable_skills_component(job, candidate, w.transferable_skills),
+        _required_skills_component(job, candidate, search, w.required_skills),
+        _transferable_skills_component(job, candidate, search, w.transferable_skills),
         _seniority_experience_component(job, candidate, search, w.seniority_experience),
-        _sector_relevance_component(w.sector_relevance),
+        _sector_relevance_component(job, candidate, search, w.sector_relevance),
         _education_component(job, candidate, w.education),
         _visa_relocation_component(job, w.visa_relocation),
     ]
@@ -327,7 +636,13 @@ def build_match_result(
         )
 
     components = compute_score_components(job, candidate, search, weights)
-    final_score = round(100 * sum(c.weighted_value for c in components), 2)
+    # Components with genuinely negative evidence (seniority mismatch,
+    # explicit no-sponsorship language) can push the raw weighted sum below
+    # zero; the displayed 0-100 scale stays bounded (Part 8) by clamping,
+    # so "strong negative evidence" and "zero evidence" both floor at 0
+    # rather than the score going negative on screen.
+    raw_total = sum(c.weighted_value for c in components)
+    final_score = round(max(0.0, min(100.0, 100 * raw_total)), 2)
     tier = determine_notification_tier(final_score, search.notification_thresholds)
     return MatchResult(
         job_id=job.job_id,

@@ -501,6 +501,11 @@ matched, whether in the title or description, by which method
 (`exact_phrase` / `token_coverage=<ratio>`), and a trailing `decision:` entry
 stating why the job passed or failed.
 
+The strong-title gate's phrase-vs-title matching is `matching.normalize.match_phrase`
+— the same function Stage 5's best-match title/role-family scoring uses
+(decisions.md D-032, Part 3) — so a job cannot pass this gate on title
+evidence that Stage 5 then fails to recognise as the same evidence.
+
 ### Stage 3 — Semantic similarity (not in M1)
 Interface reserved (`SemanticResult` field on `MatchResult`). Will use
 embeddings to catch equivalents like "Head of Special Projects" ↔ strategic
@@ -518,26 +523,116 @@ run fully without it.
 ### Stage 5 — Transparent final scoring
 Weighted components, each with visible evidence (`ScoreComponent`):
 
-| Component | Weight | M1 computation |
+| Component | Weight | Computation (decisions.md D-032) |
 |---|---|---|
-| Title / role-family match | 25% | keyword overlap against title_aliases/role_families from *both* CandidateProfile and SearchProfile (target_titles included) — decisions.md D-029 |
-| Responsibilities match | 15% | keyword/phrase overlap against description_text (proxy until Stage 3/4 exist) |
-| Required skills match | 20% | primary_skills overlap |
-| Transferable skills match | 10% | secondary_skills overlap (a missing secondary skill never zeroes this component — see below) |
-| Seniority & experience match | 10% | parsed experience range vs. candidate's, seniority keyword match |
-| Sector relevance | 10% | sector term overlap; neutral (0.5) if profile specifies no sector filter |
-| Education match | 5% | MBA/degree keyword presence in description or "no education requirement stated" → neutral |
-| Visa & relocation compatibility | 5% | derived from the Stage-1-adjacent `VisaAssessment` (deterministic evidence scan in M1) |
+| Title / role-family match | 25% | best-match strength (not a vocabulary-size ratio) across CandidateProfile/SearchProfile title and role-family signals — see below |
+| Responsibilities match | 15% | role_families+primary_skills overlap against description_text, capped-denominator coverage at a reduced fallback weight (always candidate-history-only, decisions.md D-032) |
+| Required skills match | 20% | SearchProfile.required_skills (primary signal) + CandidateProfile.primary_skills (supplemental/fallback) — see below |
+| Transferable skills match | 10% | SearchProfile.preferred_skills+transferable_skills (primary) + CandidateProfile.secondary_skills+transferable_skills (supplemental/fallback) — a missing secondary skill never zeroes this component, see below |
+| Seniority & experience match | 10% | seniority keyword match (positive), generic entry-level term mismatch (negative, decisions.md D-032 Part 7), parsed experience range vs. candidate's; no evidence either way → 0 (`not_evaluable`), never a positive default |
+| Sector relevance | 10% | word-boundary-safe phrase match against CandidateProfile.industries/sectors + SearchProfile.included/excluded_industries/sectors; 0.5 only when *nothing* is configured, 0 when preferences are configured but no evidence is found |
+| Education match | 5% | MBA/degree keyword presence in description, using only the *configured* candidate's own education/qualifications/certifications/licences; no evidence (nothing configured, or configured but not found) → 0, never a positive default |
+| Visa & relocation compatibility | 5% | positive/negative/unknown regex evidence scan; unknown → 0 (`not_evaluable`), not a neutral positive |
 
-Weights are config, not code (`config/scoring_weights.yaml` — to be added at
-implementation time, see `MILESTONE_1.md` open item). Per the requirement "a
-job must not be rejected simply because one secondary skill is missing," the
+Weights are config (`config/scoring_weights.yaml`), unaffected by the
+formula rewrite below — decisions.md D-013. Per the requirement "a job must
+not be rejected simply because one secondary skill is missing," the
 transferable-skills component is a *soft* overlap ratio, never a gating
 condition — it can only add to the score, never by itself drop a job below a
 rejection line (Stage 1 is the only stage that rejects).
 
+**Best-match title/role-family scoring (decisions.md D-032, Parts 1–3)**: the
+original formula divided every matched phrase by the *entire* configured
+title/role-family vocabulary, which mechanically diluted an exact
+target-title match by however many *other* titles a profile happened to
+configure. `title_role_family`'s raw score is now
+`(best_title_match_strength + best_role_family_match_strength) / 2`, where
+each "best match" is the single strongest configured phrase match — never
+an average or ratio over the full vocabulary, so configuring additional
+unrelated titles/role-families can never lower an existing exact match's
+score. Matching itself reuses Stage 2's `matching.normalize.match_phrase`
+(exact normalised phrase, or token-coverage ≥ the same
+`PrefilterWeights.strong_title_coverage` threshold for multi-word phrases) —
+the same function in both stages, so a job that clears Stage 2 on
+token-coverage title evidence is guaranteed non-zero credit for that same
+evidence at Stage 5 (previously Stage 5 used exact-substring-only matching,
+so some jobs passed the Stage 2 gate on evidence Stage 5 then scored as
+zero). Each match is further scaled by: field (a title-field match always
+outweighs a description-only match, mirroring Stage 2's
+`desc_only_damping`) and provenance tier (an active `SearchProfile` signal —
+`target_titles`/`title_aliases`/`role_families` — outweighs a
+`CandidateProfile` signal of otherwise-equal match quality, and
+`CandidateProfile.previous_titles` ranks lowest of all, so a candidate's
+purely historical job titles cannot automatically outrank this run's actual
+search targets).
+
+**Search-profile-aware skill scoring (decisions.md D-032, Part 4)**:
+`required_skills` and `transferable_skills` are no longer
+candidate-history-only. `SearchProfile.required_skills` /
+`preferred_skills`+`transferable_skills` (this run's actual ask) are the
+primary signal; the corresponding `CandidateProfile` fields
+(`primary_skills` / `secondary_skills`+`transferable_skills`) are
+supplemental support at a reduced weight when a search-profile signal
+exists, or a capped lower-priority fallback when it doesn't — so generic
+historical skill overlap alone can never earn as much as a genuine
+search-specific match, and (combined with the same capped-denominator
+"bounded coverage" `responsibilities` also uses) cannot by itself outrank an
+exact title match through incidental description overlap.
+
+**Sector/industry relevance (decisions.md D-032, Part 5)**: no longer
+hard-coded to a flat neutral 0.5 for every job — `CandidateProfile.industries`/
+`sectors` and `SearchProfile.included_industries`/`included_sectors` (the
+positive vocabulary) and `SearchProfile.excluded_industries`/
+`excluded_sectors` (the soft-negative vocabulary — an opt-in *hard* filter
+on the same fields already rejects a job at Stage 1 when its
+`hard_filters` toggle is on, so anything reaching here by definition wasn't
+hard-rejected) are matched against the job's title+description using
+word-boundary-safe token-sequence matching (`contains_phrase_tokens`), not
+plain substring containment — preventing a short configured term (e.g. a
+2-letter industry code) from matching inside an unrelated longer word.
+0.5 is reserved for the case where *nothing* is configured at all (a
+genuinely neutral "no preference stated"); when preferences are configured
+but no evidence is found in this job, the component is 0, not 0.5.
+
+**Entry-level seniority safeguard (decisions.md D-032, Part 7)**: a small,
+generic (profession-agnostic) list of entry-level terms — trainee,
+graduate, internship, intern, junior, entry level — is matched
+word-boundary-safe against the job's title/description. When
+`SearchProfile.min_experience_years` is at least 3 (this run targets an
+experienced hire) and one of these terms is found, `seniority_experience`
+receives explicit negative evidence rather than the neutral "no evidence"
+value, so an entry-level-worded job scores measurably lower for an
+experienced-hire search than an otherwise-equivalent standard-level posting.
+
+**No unconditional score floor (decisions.md D-032, Part 6)**: `seniority_experience`,
+`sector_relevance`, `education`, and `visa_relocation` previously defaulted
+to a neutral `raw_value` of 0.5 whenever no evidence existed at all, which
+— summed across those four components' weights — gave every job that
+cleared Stage 2 an unconditional 15-point floor regardless of relevance. No
+evidence now defaults to 0 (`not_evaluable`, always recorded explicitly in
+the component's evidence list) in every component; a genuine positive match
+still scores positively, and where a negative signal is deterministically
+detectable (an entry-level/seniority mismatch, explicit no-sponsorship
+language), the component can go negative rather than only ever sitting at
+the same value "no evidence" would. `final_score` is clamped to `[0, 100]`
+(`build_match_result`) so the displayed 0–100 scale stays meaningful even
+when negative-evidence components pull a job's raw weighted sum below zero
+— "strong negative evidence" and "zero evidence" both floor at a displayed
+0, same scale as before, not a negative number on screen.
+
+The final score is a **deterministic weighted relevance score**, not a
+statistically calibrated match probability — a 60 does not mean "60% likely
+to be a good fit" in any validated sense, only "this job's configured-signal
+overlap summed to 60 on this weighting." Interpret differences between jobs
+scored by the *same* profile as meaningful ranking signal; do not compare
+raw scores across different candidate/search profiles or read the number as
+a percentage.
+
 Notification tiers (configurable, defaults per spec): `final_score >= 85` →
-`priority`; `70 <= final_score < 85` → `digest`; `< 70` → `store_only`.
+`priority`; `70 <= final_score < 85` → `digest`; `< 70` → `store_only`. This
+scoring calibration fix (decisions.md D-032) deliberately did not touch
+these threshold values — see the ADR for why recalibrating them should wait
+for a live re-run under the new formula.
 
 ## 11. CLI behaviour
 

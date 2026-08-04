@@ -1,4 +1,5 @@
 from job_scout import config
+from job_scout.matching.prefilter import PrefilterWeights, run_prefilter
 from job_scout.matching.scoring import (
     build_match_result,
     compute_score_components,
@@ -36,14 +37,16 @@ def test_score_components_sum_of_weights_matches_config_total() -> None:
     assert abs(total_weight - 1.0) < 1e-6
 
 
-def test_required_skills_component_matches_primary_skills_overlap() -> None:
+def test_required_skills_component_uses_candidate_primary_skills_as_capped_fallback() -> None:
+    """No SearchProfile.required_skills configured -> candidate.primary_skills is
+    a lower-priority fallback (Part 4), not a plain matches/vocabulary ratio."""
     candidate = make_candidate_profile(primary_skills=["strategy_development", "governance"])
-    search = make_search_profile()
+    search = make_search_profile(required_skills=[])
     job = make_job(description_text="We need strategy development experience.")
     components = compute_score_components(job, candidate, search, _weights())
     required = next(c for c in components if c.name == "required_skills")
-    assert required.raw_value == 0.5  # 1 of 2 primary skills matched
-    assert "primary_skill:strategy_development" in required.evidence
+    assert required.raw_value == 0.1  # 0.2 fallback weight * (1 of 2 primary skills matched)
+    assert "candidate_primary_skill:strategy_development" in required.evidence
 
 
 def test_transferable_skill_never_zeroes_overall_score() -> None:
@@ -68,13 +71,16 @@ def test_transferable_skill_never_zeroes_overall_score() -> None:
     assert total > 0.0
 
 
-def test_education_component_neutral_when_no_requirement_stated() -> None:
+def test_education_component_not_evaluable_when_nothing_configured() -> None:
+    """Part 6: no automatic positive floor — nothing configured to evaluate
+    against means zero, not a neutral 0.5."""
     candidate = make_candidate_profile()
     search = make_search_profile()
     job = make_job(description_text="A generic role with no education requirement mentioned.")
     components = compute_score_components(job, candidate, search, _weights())
     education = next(c for c in components if c.name == "education")
-    assert education.raw_value == 0.5
+    assert education.raw_value == 0.0
+    assert education.evidence == ["not_evaluable:no_education_or_qualification_configured"]
 
 
 def test_education_component_mba_has_no_special_value_unless_in_profile() -> None:
@@ -87,8 +93,8 @@ def test_education_component_mba_has_no_special_value_unless_in_profile() -> Non
     job = make_job(description_text="MBA required for this role.")
     components = compute_score_components(job, candidate, search, _weights())
     education = next(c for c in components if c.name == "education")
-    assert education.raw_value == 0.5
-    assert education.evidence == []
+    assert education.raw_value == 0.0
+    assert education.evidence == ["not_evaluable:no_education_or_qualification_configured"]
 
 
 def test_education_component_positive_when_candidates_own_qualification_mentioned() -> None:
@@ -103,6 +109,20 @@ def test_education_component_positive_when_candidates_own_qualification_mentione
     education = next(c for c in components if c.name == "education")
     assert education.raw_value == 1.0
     assert "education_match:MBA" in education.evidence
+
+
+def test_education_component_configured_but_no_match_is_not_evaluable_not_neutral() -> None:
+    from job_scout.models import Education
+
+    candidate = make_candidate_profile(
+        education=[Education(level="postgraduate", degree="MBA", field="General Management")]
+    )
+    search = make_search_profile()
+    job = make_job(description_text="No qualifications mentioned in this role at all.")
+    components = compute_score_components(job, candidate, search, _weights())
+    education = next(c for c in components if c.name == "education")
+    assert education.raw_value == 0.0
+    assert education.evidence == ["not_evaluable:no_matching_evidence_found"]
 
 
 def test_visa_relocation_component_positive_negative_unknown() -> None:
@@ -129,8 +149,8 @@ def test_visa_relocation_component_positive_negative_unknown() -> None:
         if c.name == "visa_relocation"
     )
     assert positive == 1.0
-    assert negative == 0.0
-    assert unknown == 0.5
+    assert negative == -1.0  # Part 6: explicit negative evidence, distinct from "no evidence"
+    assert unknown == 0.0  # Part 6: no automatic positive floor
 
 
 def test_notification_tier_boundaries_exact() -> None:
@@ -178,7 +198,7 @@ def test_search_profile_target_title_evidence_appears_in_title_role_family_compo
     components = compute_score_components(job, candidate, search, _weights())
     title_role_family = next(c for c in components if c.name == "title_role_family")
     assert title_role_family.raw_value > 0.0
-    assert any(e.startswith("search_target_title:") for e in title_role_family.evidence)
+    assert any("search_target_title" in e for e in title_role_family.evidence)
 
 
 def test_search_profile_role_family_evidence_appears_in_title_role_family_component() -> None:
@@ -191,7 +211,7 @@ def test_search_profile_role_family_evidence_appears_in_title_role_family_compon
     components = compute_score_components(job, candidate, search, _weights())
     title_role_family = next(c for c in components if c.name == "title_role_family")
     assert title_role_family.raw_value > 0.0
-    assert any(e.startswith("search_role_family:") for e in title_role_family.evidence)
+    assert any("search_role_family" in e for e in title_role_family.evidence)
 
 
 def test_final_score_is_deterministic_across_repeated_calls() -> None:
@@ -230,3 +250,525 @@ def test_build_match_result_scores_when_both_stages_pass() -> None:
     assert result.final_score is not None
     assert 0 <= result.final_score <= 100
     assert len(result.score_components) == 8
+
+
+# --- Part 1/2 regression: title and role-family best-match stability -------
+
+
+def test_exact_target_title_match_score_stable_regardless_of_vocabulary_size() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    small_search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    unrelated_titles = [f"Unrelated Title {i}" for i in range(30)]
+    large_search = make_search_profile(
+        target_titles=["Strategy Manager", *unrelated_titles], role_families=[]
+    )
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    small = compute_score_components(job, candidate, small_search, _weights())
+    large = compute_score_components(job, candidate, large_search, _weights())
+    small_title = next(c for c in small if c.name == "title_role_family")
+    large_title = next(c for c in large if c.name == "title_role_family")
+
+    assert small_title.raw_value == large_title.raw_value
+
+
+def test_search_target_title_outranks_generic_candidate_historical_title() -> None:
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    candidate_only = make_candidate_profile(title_aliases=["Strategy Manager"], role_families=[])
+    search_no_target = make_search_profile(target_titles=[], role_families=[])
+    candidate_components = compute_score_components(
+        job, candidate_only, search_no_target, _weights()
+    )
+    candidate_title = next(c for c in candidate_components if c.name == "title_role_family")
+
+    empty_candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search_with_target = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    search_components = compute_score_components(
+        job, empty_candidate, search_with_target, _weights()
+    )
+    search_title = next(c for c in search_components if c.name == "title_role_family")
+
+    assert search_title.raw_value > candidate_title.raw_value
+
+
+def test_stage2_strong_title_evidence_has_corresponding_stage5_credit() -> None:
+    """The exact live-audit bug: 'Associate Consultant - Data & Analytics' passed
+    Stage 2 via token-coverage against 'Data & Analytics Associate', but Stage
+    5's old exact-substring-only matching gave it zero title credit. Part 3
+    fixes this by sharing the same match_phrase() function in both stages."""
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=["Data & Analytics Associate"], role_families=[])
+    job = make_job(
+        title="Associate Consultant - Data & Analytics", description_text="A generic role."
+    )
+
+    prefilter_result = run_prefilter(
+        job, candidate, search, PrefilterWeights.from_scoring_weights(_weights())
+    )
+    assert prefilter_result.passed_threshold is True
+    assert any("strong_title_match" in e for e in prefilter_result.evidence)
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+    assert title_role_family.raw_value > 0.0
+
+
+def test_ampersand_and_slash_variants_score_the_same_as_canonical_phrase() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(
+        target_titles=["Strategy and Transformation Lead"], role_families=[]
+    )
+    canonical_job = make_job(
+        title="Strategy and Transformation Lead", description_text="A generic role."
+    )
+    ampersand_job = make_job(
+        title="Strategy & Transformation Lead", description_text="A generic role."
+    )
+
+    canonical = compute_score_components(canonical_job, candidate, search, _weights())
+    ampersand = compute_score_components(ampersand_job, candidate, search, _weights())
+    canonical_title = next(c for c in canonical if c.name == "title_role_family")
+    ampersand_title = next(c for c in ampersand if c.name == "title_role_family")
+
+    assert canonical_title.raw_value == ampersand_title.raw_value
+
+
+def test_single_generic_token_from_multiword_target_does_not_score_as_title_match() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    job = make_job(title="Business Manager", description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+
+    assert title_role_family.raw_value == 0.0
+
+
+def test_search_role_family_match_stable_regardless_of_vocabulary_size() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    unrelated_families = [f"unrelated_family_{i}" for i in range(20)]
+    small_search = make_search_profile(target_titles=[], role_families=["business_transformation"])
+    large_search = make_search_profile(
+        target_titles=[], role_families=["business_transformation", *unrelated_families]
+    )
+    job = make_job(title="Business Transformation Lead", description_text="A generic role.")
+
+    small = compute_score_components(job, candidate, small_search, _weights())
+    large = compute_score_components(job, candidate, large_search, _weights())
+    small_title = next(c for c in small if c.name == "title_role_family")
+    large_title = next(c for c in large if c.name == "title_role_family")
+
+    assert small_title.raw_value == large_title.raw_value
+
+
+def test_search_role_family_evidence_recorded_with_provenance() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=[], role_families=["business_transformation"])
+    job = make_job(title="Business Transformation Lead", description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+
+    assert any("search_role_family" in e for e in title_role_family.evidence)
+
+
+def test_candidate_role_family_contributes_without_diluting_search_target_evidence() -> None:
+    job = make_job(title="Business Transformation Lead", description_text="A generic role.")
+    search = make_search_profile(target_titles=[], role_families=["business_transformation"])
+
+    with_unrelated_history = make_candidate_profile(
+        title_aliases=[], role_families=["unrelated_history_family"]
+    )
+    without_history = make_candidate_profile(title_aliases=[], role_families=[])
+
+    with_history_components = compute_score_components(
+        job, with_unrelated_history, search, _weights()
+    )
+    without_history_components = compute_score_components(
+        job, without_history, search, _weights()
+    )
+    with_history_title = next(c for c in with_history_components if c.name == "title_role_family")
+    without_history_title = next(
+        c for c in without_history_components if c.name == "title_role_family"
+    )
+
+    # unrelated candidate history doesn't change the winning (search-target) match
+    assert with_history_title.raw_value == without_history_title.raw_value
+
+
+# --- Part 4 regression: search-profile-aware skill scoring -----------------
+
+
+def test_search_required_skill_contributes_more_than_candidate_secondary_skill() -> None:
+    candidate = make_candidate_profile(
+        primary_skills=[], secondary_skills=["stakeholder_management"]
+    )
+    search = make_search_profile(required_skills=["stakeholder_management"])
+    job = make_job(description_text="This role needs stakeholder management.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    required = next(c for c in components if c.name == "required_skills")
+    transferable = next(c for c in components if c.name == "transferable_skills")
+
+    assert required.weighted_value > transferable.weighted_value
+
+
+def test_search_preferred_skill_contributes_less_than_search_required_skill() -> None:
+    candidate = make_candidate_profile(primary_skills=[], secondary_skills=[])
+    job = make_job(description_text="This role needs stakeholder management.")
+
+    required_search = make_search_profile(
+        required_skills=["stakeholder_management"], preferred_skills=[]
+    )
+    preferred_search = make_search_profile(
+        required_skills=[], preferred_skills=["stakeholder_management"]
+    )
+
+    required_contribution = next(
+        c
+        for c in compute_score_components(job, candidate, required_search, _weights())
+        if c.name == "required_skills"
+    ).weighted_value
+    preferred_contribution = next(
+        c
+        for c in compute_score_components(job, candidate, preferred_search, _weights())
+        if c.name == "transferable_skills"
+    ).weighted_value
+
+    assert preferred_contribution > 0.0
+    assert required_contribution > preferred_contribution
+
+
+def test_generic_candidate_skill_overlap_does_not_outrank_exact_title_match() -> None:
+    title_match_candidate = make_candidate_profile(
+        title_aliases=[], role_families=[], primary_skills=[], secondary_skills=[]
+    )
+    title_match_search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    title_match_job = make_job(title="Strategy Manager", description_text="A generic role.")
+    title_match_result = build_match_result(
+        title_match_job,
+        title_match_candidate,
+        title_match_search,
+        HardFilterResult(passed=True, rejections=[]),
+        PrefilterResult(score=0.9, passed_threshold=True),
+        _weights(),
+    )
+
+    # No title/role match at all, but the candidate's generic historical
+    # skills all happen to be mentioned in an unrelated job's description.
+    skill_overlap_candidate = make_candidate_profile(
+        title_aliases=[],
+        role_families=[],
+        primary_skills=["financial_modelling", "market_sizing", "due_diligence"],
+        secondary_skills=["pmo", "kpi_framework_design"],
+    )
+    skill_overlap_search = make_search_profile(target_titles=[], role_families=[])
+    skill_overlap_job = make_job(
+        title="Data Analytics Manager",
+        description_text=(
+            "This role covers financial modelling, market sizing, due diligence, "
+            "pmo and kpi framework design."
+        ),
+    )
+    skill_overlap_result = build_match_result(
+        skill_overlap_job,
+        skill_overlap_candidate,
+        skill_overlap_search,
+        HardFilterResult(passed=True, rejections=[]),
+        PrefilterResult(score=0.9, passed_threshold=True),
+        _weights(),
+    )
+
+    assert title_match_result.final_score is not None
+    assert skill_overlap_result.final_score is not None
+    assert title_match_result.final_score > skill_overlap_result.final_score
+
+
+def test_no_configured_skill_evidence_contributes_zero_not_a_positive_floor() -> None:
+    candidate = make_candidate_profile(primary_skills=[], secondary_skills=[])
+    search = make_search_profile(required_skills=[], preferred_skills=[])
+    job = make_job(description_text="A completely unrelated job description.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    required = next(c for c in components if c.name == "required_skills")
+    transferable = next(c for c in components if c.name == "transferable_skills")
+
+    assert required.raw_value == 0.0
+    assert transferable.raw_value == 0.0
+
+
+# --- Part 5 regression: sector/industry relevance ---------------------------
+
+
+def test_matching_included_industry_increases_sector_component() -> None:
+    candidate = make_candidate_profile(industries=["government"])
+    search = make_search_profile()
+    job = make_job(description_text="This role sits within the government sector.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    sector = next(c for c in components if c.name == "sector_relevance")
+
+    assert sector.raw_value == 1.0
+    assert any("included_industry_or_sector:government" in e for e in sector.evidence)
+
+
+def test_excluded_industry_reduces_component_without_hard_rejection() -> None:
+    candidate = make_candidate_profile(industries=["government"])
+    search = make_search_profile(excluded_industries=["defence"])
+    job = make_job(description_text="This role sits entirely within the defence sector.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    sector = next(c for c in components if c.name == "sector_relevance")
+
+    assert sector.raw_value == 0.0
+    assert any("excluded_industry_or_sector:defence" in e for e in sector.evidence)
+    # soft signal only — never a hard rejection from this component
+    result = build_match_result(
+        job,
+        candidate,
+        search,
+        HardFilterResult(passed=True, rejections=[]),
+        PrefilterResult(score=0.9, passed_threshold=True),
+        _weights(),
+    )
+    assert result.notification_tier != NotificationTier.REJECTED
+
+
+def test_short_industry_token_does_not_match_inside_unrelated_word() -> None:
+    """The live-audit "ai" bug: a 2-letter configured industry term must not
+    match the substring "ai" inside an unrelated word like "Trainee"."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_industries=["ai"])
+    job = make_job(title="Business Analyst Trainee", description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    sector = next(c for c in components if c.name == "sector_relevance")
+
+    assert not any("included_industry_or_sector:ai" in e for e in sector.evidence)
+    assert sector.raw_value == 0.0
+
+
+def test_no_configured_sector_preferences_gives_documented_neutral() -> None:
+    candidate = make_candidate_profile(industries=[], sectors=[])
+    search = make_search_profile(included_industries=[], included_sectors=[])
+    job = make_job(description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    sector = next(c for c in components if c.name == "sector_relevance")
+
+    assert sector.raw_value == 0.5
+    assert sector.evidence == ["not_evaluable:no_industry_or_sector_preference_configured"]
+
+
+def test_configured_preferences_with_no_detected_evidence_grant_no_points() -> None:
+    candidate = make_candidate_profile(industries=["telecom"])
+    search = make_search_profile()
+    job = make_job(description_text="A completely unrelated job description.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    sector = next(c for c in components if c.name == "sector_relevance")
+
+    assert sector.raw_value == 0.0
+    assert sector.evidence == ["not_evaluable:no_matching_evidence_found"]
+
+
+# --- Part 6 regression: no unconditional score floor ------------------------
+
+
+def test_zero_evidence_job_scores_near_zero_not_fifteen() -> None:
+    candidate = make_candidate_profile(
+        title_aliases=[],
+        role_families=[],
+        primary_skills=[],
+        secondary_skills=[],
+        industries=[],
+        sectors=[],
+    )
+    search = make_search_profile(
+        target_titles=[],
+        role_families=[],
+        required_skills=[],
+        preferred_skills=[],
+        included_industries=[],
+        included_sectors=[],
+        excluded_industries=[],
+        excluded_sectors=[],
+    )
+    job = make_job(
+        title="Completely Unrelated Role",
+        description_text="Nothing here matches anything configured at all.",
+    )
+    result = build_match_result(
+        job,
+        candidate,
+        search,
+        HardFilterResult(passed=True, rejections=[]),
+        PrefilterResult(score=0.9, passed_threshold=True),
+        _weights(),
+    )
+    assert result.final_score is not None
+    # Only sector_relevance's "nothing configured" neutral (0.5 * 0.10 weight
+    # = 5.0) survives; the old behaviour floored every job at 15.0.
+    assert result.final_score < 10.0
+
+
+def test_missing_or_truncated_description_neither_penalises_nor_rewards() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    full_job = make_job(
+        title="Strategy Manager",
+        description_text="Strategy Manager role. " + ("Detail. " * 200),
+    )
+    truncated_job = make_job(title="Strategy Manager", description_text="Strategy Manager role.")
+
+    full_components = compute_score_components(
+        job=full_job, candidate=candidate, search=search, weights=_weights()
+    )
+    truncated_components = compute_score_components(
+        job=truncated_job, candidate=candidate, search=search, weights=_weights()
+    )
+    full_title = next(c for c in full_components if c.name == "title_role_family")
+    truncated_title = next(c for c in truncated_components if c.name == "title_role_family")
+
+    # title evidence is unaffected either way — description length never
+    # penalises or rewards the title/role match by itself
+    assert full_title.raw_value == truncated_title.raw_value
+
+
+# --- Part 7 regression: entry-level seniority safeguard ---------------------
+
+
+def test_trainee_role_scores_below_standard_role_for_experienced_search() -> None:
+    candidate = make_candidate_profile(title_aliases=["Business Analyst"], role_families=[])
+    search = make_search_profile(
+        target_titles=[], role_families=[], min_experience_years=5, max_experience_years=15
+    )
+
+    standard_job = make_job(
+        title="Business Analyst", description_text="Business analyst role, London."
+    )
+    trainee_job = make_job(
+        title="Business Analyst Trainee", description_text="Entry point into a BA career."
+    )
+
+    standard_result = build_match_result(
+        standard_job,
+        candidate,
+        search,
+        HardFilterResult(passed=True, rejections=[]),
+        PrefilterResult(score=0.9, passed_threshold=True),
+        _weights(),
+    )
+    trainee_result = build_match_result(
+        trainee_job,
+        candidate,
+        search,
+        HardFilterResult(passed=True, rejections=[]),
+        PrefilterResult(score=0.9, passed_threshold=True),
+        _weights(),
+    )
+
+    assert standard_result.final_score is not None
+    assert trainee_result.final_score is not None
+    assert trainee_result.final_score < standard_result.final_score
+
+
+def test_graduate_role_receives_seniority_mismatch_signal() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(min_experience_years=5, max_experience_years=15)
+    job = make_job(
+        title="Graduate Strategy Analyst", description_text="A graduate programme role."
+    )
+
+    components = compute_score_components(job, candidate, search, _weights())
+    seniority = next(c for c in components if c.name == "seniority_experience")
+
+    assert any(e.startswith("seniority_mismatch:") for e in seniority.evidence)
+    assert seniority.raw_value < 0.0
+
+
+def test_missing_seniority_language_is_not_automatically_rewarded() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(min_experience_years=5, max_experience_years=15)
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+
+    components = compute_score_components(job, candidate, search, _weights())
+    seniority = next(c for c in components if c.name == "seniority_experience")
+
+    assert seniority.raw_value <= 0.0
+
+
+# --- Live-case synthetic regression: strong group outranks weak group -------
+
+
+def _live_like_candidate() -> object:
+    return make_candidate_profile(
+        title_aliases=["Management Consultant", "Business Analyst", "Strategy Consultant"],
+        role_families=["management_consulting", "business_strategy", "data_analytics"],
+        primary_skills=["business_strategy", "financial_modelling", "market_sizing"],
+        secondary_skills=["stakeholder_management", "kpi_framework_design"],
+        industries=["telecom_media_technology", "public_sector"],
+        sectors=["government", "financial_services"],
+    )
+
+
+def _live_like_search() -> object:
+    return make_search_profile(
+        target_titles=["Strategy Manager", "Head of Strategy", "Director of Corporate Strategy"],
+        role_families=["strategy", "corporate_strategy", "business_transformation"],
+        preferred_skills=["business_strategy", "stakeholder_management"],
+        included_industries=["telecom", "government"],
+        min_experience_years=5,
+        max_experience_years=15,
+    )
+
+
+def test_strong_strategy_group_outranks_weak_data_and_trainee_group() -> None:
+    candidate = _live_like_candidate()
+    search = _live_like_search()
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+
+    strong_jobs = [
+        make_job(title="Strategy Manager", description_text="Corporate strategy team role."),
+        make_job(
+            title="Business Strategy Consultant",
+            description_text="Business strategy consulting engagement.",
+        ),
+        make_job(
+            title="Consulting Project Team Lead - Corporate Strategy",
+            description_text="Leads corporate strategy consulting projects.",
+        ),
+    ]
+    weak_jobs = [
+        make_job(
+            title="Lead - Clinical Data Manager / Data Analytics",
+            description_text="Manages clinical data analytics operations.",
+        ),
+        make_job(
+            title="Senior Manager - Model Build & Data Analytics",
+            description_text="Builds credit risk models using data analytics.",
+        ),
+        make_job(
+            title="Business Analyst Trainee",
+            description_text="Entry-level trainee programme for business analysts.",
+        ),
+    ]
+
+    strong_scores = [
+        build_match_result(
+            job, candidate, search, hard_filter_result, prefilter_result, _weights()
+        ).final_score
+        for job in strong_jobs
+    ]
+    weak_scores = [
+        build_match_result(
+            job, candidate, search, hard_filter_result, prefilter_result, _weights()
+        ).final_score
+        for job in weak_jobs
+    ]
+
+    assert all(score is not None for score in strong_scores)
+    assert all(score is not None for score in weak_scores)
+    assert min(strong_scores) > max(weak_scores)
