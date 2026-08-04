@@ -295,6 +295,49 @@ def test_cli_limit_further_lowers_but_never_raises_the_configured_ceiling(tmp_pa
         assert len(result2.results) == 2
 
 
+def test_gb_ie_profile_executes_gb_via_adzuna_without_ie_in_params(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Regression for the live D-028 finding: a search profile that still
+    requests GB+IE must still run Adzuna successfully for GB — the planner
+    already narrows search_params.countries to the registry-supported
+    subset, so IE (unsupported for adzuna_api per the fixed registry
+    coverage) never reaches the adapter and never causes a 404."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB", "IE"])
+    registry = [_adzuna_registry_entry()]  # geographic_coverage=["GB"] only
+    fake_adapter = _FakeAdapter(_make_records(["1"]))
+
+    with SqliteJobRepository(tmp_path / "db.sqlite3") as repo:
+        result = run_once(
+            candidate_profile=candidate,
+            search_profile=search,
+            registry=registry,
+            execution_limits=_limits(),
+            scoring_weights=_weights(),
+            source_scoring_weights=_source_weights(),
+            repository=repo,
+            env=_env(),
+            dry_run=False,
+            adapter_factory=lambda source_id: fake_adapter if source_id == "adzuna_api" else None,
+        )
+
+        assert fake_adapter.calls == 1
+        assert len(result.source_runs) == 1
+        assert result.source_runs[0].source_id == "adzuna_api"
+        assert result.source_runs[0].status == SourceRunStatus.SUCCESS
+        assert result.source_runs[0].errors == []
+        assert len(result.results) == 1
+
+        adzuna_selected = next(
+            s for s in result.plan.selected_sources if s.source_id == "adzuna_api"
+        )
+        assert adzuna_selected.executable is True
+        assert adzuna_selected.supported_countries == ["GB"]
+        assert [c.country for c in adzuna_selected.unsupported_countries] == ["IE"]
+        assert [c.reason for c in adzuna_selected.unsupported_countries] == [
+            "not_in_geographic_coverage"
+        ]
+
+
 def test_unconfigured_adapter_produces_isolated_failed_run_not_a_crash(tmp_path) -> None:  # type: ignore[no-untyped-def]
     candidate = make_candidate_profile()
     search = make_search_profile(included_countries=["GB"])

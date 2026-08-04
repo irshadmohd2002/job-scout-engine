@@ -225,9 +225,17 @@ Rules every adapter must follow:
   `allowed=True` for that source **at call time** (not just at planning time —
   registry state can change between plan generation and execution).
 - Adapters raise typed exceptions (`SourceAuthError`, `SourceRateLimitError`,
-  `SourceUnavailableError`) rather than leaking `httpx` exceptions; the pipeline
-  catches these per-source so one failing source doesn't abort a run.
-  `SourceRun.status` reflects this (`partial` on a caught per-source failure).
+  `SourceNotFoundError`, `SourceUnavailableError`) rather than leaking `httpx`
+  exceptions; the pipeline catches these per-source so one failing source
+  doesn't abort a run. `SourceRun.status` reflects this (`partial` on a
+  caught per-source failure). `SourceNotFoundError` (HTTP 404) is kept
+  distinct from `SourceUnavailableError` because a 404 on a well-formed
+  request path usually signals a persistent config/routing problem (e.g. an
+  unsupported country for that source) rather than a transient outage.
+- Exception messages carry diagnostic context (source id, country, page,
+  status code) but never the request's query parameters or response body,
+  since credentials travel in the query string and `SourceRun.errors`
+  persists these messages (`pipeline.py`).
 - Adapters own their own rate-limit/backoff behaviour; they never bypass
   authentication, CAPTCHAs, or published rate limits (per project ground rules).
 - Adapters are pure at the boundary: HTTP in, `RawJobRecord` out. Normalisation
@@ -719,7 +727,11 @@ adapter; a second database backend), not speculative abstraction.
   second adapter or email-alert ingestion exists. **Verify Adzuna's actual
   supported country list against their current API docs at implementation
   time** — the registry's coverage list is this project's working assumption,
-  not a verified fact.
+  not a verified fact. IE was live-verified as unsupported (HTTP 404 on
+  `/v1/api/jobs/ie/search/{page}`) and removed from
+  `adzuna_api.geographic_coverage` accordingly (decisions.md D-028); the
+  remaining entries are still this project's working assumption, not
+  individually re-verified.
 - **R-2 (Cold-start scoring)**: Several source-scoring factors
   (`historical_match_count`, `duplicate_rate`, adapter health) have no data on
   a fresh install. Neutral-prior defaults (§6) avoid divide-by-zero/None

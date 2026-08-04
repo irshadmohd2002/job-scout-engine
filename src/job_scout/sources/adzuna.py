@@ -20,6 +20,7 @@ import httpx
 from job_scout.models import AccessMode, RawJobRecord, SourceSearchParams
 from job_scout.sources.base import (
     SourceAuthError,
+    SourceNotFoundError,
     SourceRateLimitError,
     SourceUnavailableError,
 )
@@ -101,36 +102,56 @@ class AdzunaAdapter:
     ) -> dict[str, Any]:
         url = f"{BASE_URL}/jobs/{country.lower()}/search/{page}"
         query = self._build_query(params)
+        # Context for error messages only — never the query dict itself, so
+        # app_id/app_key (and the response body, which may echo request
+        # details) can never end up in a raised message or persisted log.
+        context = f"source_id={self.source_id} country={country} page={page}"
 
         attempt = 0
         while True:
             try:
                 response = client.get(url, params=query)
             except httpx.TimeoutException as exc:
-                raise SourceUnavailableError(f"Adzuna request timed out: {exc}") from exc
+                raise SourceUnavailableError(
+                    f"Adzuna request timed out ({type(exc).__name__}) [{context}]."
+                ) from exc
             except httpx.HTTPError as exc:
-                raise SourceUnavailableError(f"Adzuna request failed: {exc}") from exc
+                raise SourceUnavailableError(
+                    f"Adzuna request failed ({type(exc).__name__}) [{context}]."
+                ) from exc
 
             if response.status_code == 200:
                 result: dict[str, Any] = response.json()
                 return result
             if response.status_code in (401, 403):
                 raise SourceAuthError(
-                    f"Adzuna authentication failed (HTTP {response.status_code})."
+                    f"Adzuna authentication failed (HTTP {response.status_code}) [{context}] — "
+                    "check ADZUNA_APP_ID/ADZUNA_APP_KEY."
+                )
+            if response.status_code == 404:
+                raise SourceNotFoundError(
+                    f"Adzuna endpoint not found (HTTP 404) [{context}] — the request path was "
+                    "well-formed but Adzuna has no matching route; this usually means the "
+                    "country code isn't a supported Adzuna market, not a URL bug."
                 )
             if response.status_code == 429:
                 if attempt >= self.max_retries:
-                    raise SourceRateLimitError("Adzuna rate limit exceeded; retries exhausted.")
+                    raise SourceRateLimitError(
+                        f"Adzuna rate limit exceeded; retries exhausted [{context}]."
+                    )
                 attempt += 1
                 continue
             if response.status_code >= 500:
                 if attempt >= self.max_retries:
                     raise SourceUnavailableError(
-                        f"Adzuna returned HTTP {response.status_code}; retries exhausted."
+                        f"Adzuna returned HTTP {response.status_code}; retries exhausted "
+                        f"[{context}]."
                     )
                 attempt += 1
                 continue
-            raise SourceUnavailableError(f"Adzuna returned unexpected HTTP {response.status_code}.")
+            raise SourceUnavailableError(
+                f"Adzuna returned unexpected HTTP {response.status_code} [{context}]."
+            )
 
     def _to_raw_record(self, item: dict[str, Any], country: str) -> RawJobRecord:
         # Adzuna's own payload has no reliable ISO country code field; stash

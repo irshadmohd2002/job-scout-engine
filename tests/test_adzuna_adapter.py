@@ -4,7 +4,12 @@ import respx
 
 from job_scout.models import SourceSearchParams
 from job_scout.sources.adzuna import BASE_URL, AdzunaAdapter
-from job_scout.sources.base import SourceAuthError, SourceRateLimitError, SourceUnavailableError
+from job_scout.sources.base import (
+    SourceAuthError,
+    SourceNotFoundError,
+    SourceRateLimitError,
+    SourceUnavailableError,
+)
 
 
 def _params(**overrides: object) -> SourceSearchParams:
@@ -136,3 +141,79 @@ def test_multiple_countries_each_queried() -> None:
     adapter = AdzunaAdapter(app_id="id", app_key="key")
     records = adapter.fetch(_params(countries=["GB", "DE"], page_size=2, max_pages=1))
     assert {r.external_id for r in records} == {"gb1", "de1"}
+
+
+@respx.mock
+def test_gb_endpoint_uses_documented_path_and_page_placement() -> None:
+    route = respx.get("https://api.adzuna.com/v1/api/jobs/gb/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+    adapter.fetch(_params(countries=["GB"], max_pages=1))
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_ie_endpoint_uses_documented_path_lowercased() -> None:
+    route = respx.get("https://api.adzuna.com/v1/api/jobs/ie/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+    adapter.fetch(_params(countries=["IE"], max_pages=1))
+    assert route.call_count == 1
+    # respx only matches because the path segment is lowercase "ie"; an
+    # uppercase "IE" segment would not have matched this route at all,
+    # confirming SourceSearchParams.countries="IE" is lowercased on the wire.
+
+
+@respx.mock
+def test_required_query_parameter_names_are_sent() -> None:
+    route = respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="my-app-id", app_key="my-app-key")
+    adapter.fetch(_params(max_pages=1))
+    sent = route.calls.last.request.url.params
+    assert sent["app_id"] == "my-app-id"
+    assert sent["app_key"] == "my-app-key"
+    assert sent["results_per_page"] == "2"
+    assert sent["content-type"] == "application/json"
+    assert "what_or" in sent  # `what`/`what_or` per params.keywords
+
+
+@respx.mock
+def test_http_404_raises_source_not_found_error_with_diagnostic_context() -> None:
+    respx.get(f"{BASE_URL}/jobs/ie/search/1").mock(return_value=httpx.Response(404))
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+    with pytest.raises(SourceNotFoundError) as exc_info:
+        adapter.fetch(_params(countries=["IE"], max_pages=1))
+    message = str(exc_info.value)
+    assert "404" in message
+    assert "source_id=adzuna_api" in message
+    assert "country=IE" in message
+    assert "page=1" in message
+
+
+@respx.mock
+def test_credentials_never_appear_in_raised_error_messages() -> None:
+    secret_id, secret_key = "super-secret-app-id", "super-secret-app-key"
+    respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(return_value=httpx.Response(404))
+    adapter = AdzunaAdapter(app_id=secret_id, app_key=secret_key)
+    with pytest.raises(SourceNotFoundError) as exc_info:
+        adapter.fetch(_params(max_pages=1))
+    message = str(exc_info.value)
+    assert secret_id not in message
+    assert secret_key not in message
+
+
+@respx.mock
+def test_auth_error_message_carries_context_not_credentials() -> None:
+    respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(return_value=httpx.Response(401))
+    adapter = AdzunaAdapter(app_id="secret-id", app_key="secret-key")
+    with pytest.raises(SourceAuthError) as exc_info:
+        adapter.fetch(_params(max_pages=1))
+    message = str(exc_info.value)
+    assert "secret-id" not in message
+    assert "secret-key" not in message
+    assert "country=GB" in message
+    assert "page=1" in message

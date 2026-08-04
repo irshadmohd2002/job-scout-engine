@@ -451,3 +451,71 @@ and be checkable — stamping both "never versioned" and "freshly created" as
 the current version 1 is correct in both cases today, and the
 greater-than-supported check is what makes the mechanism meaningful for the
 future without building anything migration-shaped now.
+
+### D-027: A first live Adzuna run's HTTP 404 was not a URL-construction
+bug — `_get_page` already matched Adzuna's documented endpoint exactly
+**Decision**: Investigated a live-run report of `Adzuna returned unexpected
+HTTP 404` against `adzuna.py`'s URL builder. Re-derived the constructed URLs
+for GB/IE directly (`https://api.adzuna.com/v1/api/jobs/gb/search/1`,
+`.../jobs/ie/search/1`), confirmed they match `GET /v1/api/jobs/{country}/
+search/{page}` exactly (same contract D-016 already verified against
+Adzuna's docs), and confirmed all ten existing `test_adzuna_adapter.py`
+cases pass against that URL shape — so no path/casing/duplication bug
+exists. Rather than rewrite already-correct URL logic, added a distinct
+`SourceNotFoundError` (`sources/base.py`) so a 404 is no longer lumped into
+the generic "unexpected HTTP status" branch of `SourceUnavailableError`, and
+added `source_id`/country/page context to every adapter error message
+(never the query params or response body, since `SourceRun.errors`
+persists these strings and credentials travel in the query string).
+**Alternatives**: Assume the report implied a real path bug and rewrite the
+URL builder anyway; silently swallow 404s per-country instead of raising.
+**Why**: D-016 already flagged that Adzuna's actual supported-country list
+couldn't be confirmed from a single authoritative source, specifically
+naming `IE` as disputed — a 404 on an otherwise well-formed request is the
+expected symptom if a `geographic_coverage` entry (here, the example
+registry's `adzuna_api` listing `IE`) includes a country Adzuna's API
+doesn't actually route. Editing that unconfirmed list again without a
+authoritative source would repeat the mistake D-016 already declined to
+make; giving the error message enough context (which country, which page)
+lets whoever runs it next diagnose a per-country 404 immediately instead of
+re-deriving it from a bare status code.
+
+### D-028: Live execution confirmed the D-027 hypothesis — removed `IE`
+from `adzuna_api.geographic_coverage` in the packaged registry template
+**Decision**: A live `run-once` against the real Adzuna API reproduced
+`Adzuna endpoint not found (HTTP 404) [source_id=adzuna_api country=IE
+page=1]` — the exact `SourceNotFoundError` D-027 anticipated for an
+unsupported market, now backed by a live response instead of disputed
+secondary docs. Removed `IE` from `adzuna_api.geographic_coverage` in
+`src/job_scout/resources/templates/source_registry.example.yaml`, keeping
+`GB` (and the other previously-listed countries, none of which have a live
+404 report against them) untouched. Did not touch `included_countries` on
+any search profile — Ireland stays a valid country for a candidate to
+search, it's just no longer routed through Adzuna specifically; the
+planner's existing per-source-country exclusion logic (§6/§11a,
+`unsupported_countries` with reason `not_in_geographic_coverage`) already
+reports `IE` as unsupported for `adzuna_api` and already narrows
+`SourceSearchParams.countries` to only the supported subset before any
+adapter call, so `GB` executes normally in the same run even when the
+profile also requests `IE` — no pipeline or planner code change was needed,
+only the registry data. Added regression coverage in `test_planner.py` and
+`test_pipeline.py` for a combined `GB`+`IE` profile against an
+Adzuna-shaped entry with `geographic_coverage: [GB]`.
+**Alternatives**: Leave the template list unedited per D-027's original
+reasoning (no longer applicable — that reasoning was explicitly about
+*unconfirmed* secondary sources, and this is now a first-party live
+result); have the adapter catch 404 and silently drop the country
+per-request instead of fixing the registry (rejected — it would hide a
+config error behind a runtime catch, and the registry is the documented
+source of truth for coverage, not the adapter).
+**Why**: A live HTTP 404 from Adzuna itself is the authoritative
+confirmation D-016/D-027 were waiting for — it's no longer "unconfirmed
+secondary sources disagree," it's a direct response from the API in
+question for this exact source_id/country pair. Fixing coverage at the
+registry layer (rather than in `adzuna.py` or `pipeline.py`) matches
+CLAUDE.md hard constraint 6 (source selection goes through the registry,
+never a hard-coded list) and keeps the country/source concerns properly
+separated: which countries a *candidate* wants is profile data; which
+countries a *source* can actually serve is registry data; the planner's
+existing intersection logic is what's supposed to reconcile the two, and
+this incident is exactly the case it exists for.

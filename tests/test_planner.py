@@ -155,6 +155,37 @@ def test_country_truncation_preserves_profile_order_and_records_skips() -> None:
     assert "US" not in selected.search_params.countries  # type: ignore[union-attr]
 
 
+def test_adzuna_gb_ie_profile_reports_ie_unsupported_and_only_queries_gb() -> None:
+    """Regression for the live D-028 finding: Adzuna 404s on IE, so the
+    packaged registry template's adzuna_api.geographic_coverage no longer
+    lists IE. A profile that still requests GB+IE (Ireland is never removed
+    from the candidate's own search profile) must show Adzuna executable
+    for GB, IE reported as unsupported with reason not_in_geographic_coverage,
+    and IE must never reach the adapter's search params."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB", "IE"])
+    adzuna = make_source_entry(
+        source_id="adzuna_api",
+        access_mode=AccessMode.PUBLIC_API,
+        approval_status=ApprovalStatus.APPROVED,
+        geographic_coverage=["GB"],  # IE removed per D-028
+        role_coverage=["general"],
+    )
+    plan = build_plan(candidate, search, [adzuna], _limits(), _weights())
+
+    assert len(plan.selected_sources) == 1
+    selected = plan.selected_sources[0]
+    assert selected.source_id == "adzuna_api"
+    assert selected.executable is True
+    assert selected.supported_countries == ["GB"]
+    assert [c.country for c in selected.unsupported_countries] == ["IE"]
+    assert [c.reason for c in selected.unsupported_countries] == ["not_in_geographic_coverage"]
+
+    assert selected.search_params is not None
+    assert selected.search_params.countries == ["GB"]
+    assert "IE" not in selected.search_params.countries
+
+
 def test_no_role_coverage_excludes_source() -> None:
     candidate = make_candidate_profile(role_families=["engineering"])
     search = make_search_profile(included_countries=["GB"], role_families=[])

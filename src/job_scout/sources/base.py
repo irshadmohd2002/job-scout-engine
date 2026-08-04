@@ -27,6 +27,12 @@ class SourceUnavailableError(SourceAdapterError):
     exhausted, or an unexpected non-2xx response."""
 
 
+class SourceNotFoundError(SourceAdapterError):
+    """Source returned HTTP 404 for a well-formed request — usually a
+    routing/config problem (e.g. an unsupported country) rather than a
+    transient outage, so it's kept distinct from SourceUnavailableError."""
+
+
 class SourceAdapter(Protocol):
     source_id: str
     access_mode: AccessMode

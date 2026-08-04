@@ -24,8 +24,11 @@ sources:
     name: "Adzuna Job Search API"
     source_type: aggregator_api
     # Illustrative coverage list only — verify against Adzuna's current docs
-    # before relying on it for a real run (architecture.md R-1).
-    geographic_coverage: [GB, DE, NL, IE, SG, CA, AU, US]
+    # before relying on it for a real run (architecture.md R-1). IE was
+    # removed after a live run confirmed Adzuna returns HTTP 404 for
+    # /v1/api/jobs/ie/search/{page} — a genuine unsupported-market response,
+    # not a URL bug (decisions.md D-028).
+    geographic_coverage: [GB, DE, NL, SG, CA, AU, US]
     role_coverage: [general]
     industry_coverage: [] # unrestricted — a general aggregator, not industry-specific
     sector_coverage: []
