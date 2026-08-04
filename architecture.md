@@ -136,7 +136,8 @@ Output of `source_intelligence.planner`. Fields:
 `SelectedSource`: `source_id`, `score: float`, `score_breakdown: dict[str, float]`,
 `reasons_selected: list[str]`, `access_mode`, `approval_status`,
 `search_params: SourceSearchParams`, `search_queries: list[str]`,
-`polling_frequency_minutes`, `config_status`, `required_setup_actions: list[str]`,
+`polling_frequency_minutes`, `config_status`, `effective_config_status`,
+`required_setup_actions: list[str]`,
 `region_country_coverage: list[str]`, `priority: int`,
 `executable: bool` (compliance-gate result — see §7; a source can be *selected*
 for its relevance and still be `executable=False`, surfacing as a "needs setup"
@@ -146,6 +147,19 @@ covers), `unsupported_countries: list[CountryExclusion]` (the requested
 countries this source does *not* cover — always populated even when the
 source is otherwise `executable`, so a partially-applicable source is fully
 transparent per-country; see §11a).
+
+`config_status` vs `effective_config_status` (Milestone 1.1, decisions.md
+D-029): `config_status` stays exactly what §4 describes below — static,
+user-maintained registry metadata, never written back by the engine.
+`effective_config_status` is a live view computed by `build_plan` from an
+optional `EnvConfig`: for `adzuna_api` it's `configured` when
+`ADZUNA_APP_ID`/`ADZUNA_APP_KEY` are both present, else `needs_credentials`,
+regardless of what the registry YAML declares; every other source_id (no
+adapter/credential rule implemented yet) falls back to its declared
+`config_status` unchanged. `build_plan(..., env=None)` (the default) leaves
+`effective_config_status == config_status` for every source — existing
+callers that don't pass `env` see no behaviour change. Never derived from or
+displaying a secret value, only a boolean-derived enum.
 
 `CountryExclusion`: `country: str`, `reason: str` (e.g.
 `"not_in_geographic_coverage"`).
@@ -245,6 +259,20 @@ Rules every adapter must follow:
 Milestone 1 implements exactly one adapter: `AdzunaAdapter` (`public_api`,
 `approved`).
 
+**Known limitation — truncated descriptions**: Adzuna's `/search` endpoint
+returns only a snippet of each job's description (their own docs state this
+explicitly); there is no documented request parameter to obtain the full
+description (confirmed against `developer.adzuna.com` at investigation time,
+decisions.md D-031 — not merely unconfirmed, actively checked and not
+found). `Job.description_text` for Adzuna-sourced jobs is therefore
+routinely truncated to roughly the first ~500 characters. Stage 2/5 matching
+already weights title-field evidence over description-only evidence
+specifically because of this (see Stage 2 above), so title matching does not
+depend on the full description being available — but description-only
+evidence (skills/keywords/responsibilities mentioned later in a longer
+posting) can be missed. If Adzuna documents such a parameter in the future,
+add it to `AdzunaAdapter._build_query` and update this note.
+
 ## 4. Repository contract
 
 ```python
@@ -276,7 +304,11 @@ migration for them can lag — the *interface* is what must not change.
 repository does not persist them. A future milestone may add a
 `SourceRegistryRepository` if the registry needs runtime mutation (e.g., a
 discovery process writing back `config_status`), but that is out of scope now
-(see `decisions.md` D-009).
+(see `decisions.md` D-009). §2.10's `SelectedSource.effective_config_status`
+(decisions.md D-029) is not an exception to this: it's computed fresh on
+every `build_plan` call from `EnvConfig` and never written back to the
+registry YAML — `SourceRegistryEntry.config_status` itself stays exactly the
+static field D-009 describes.
 
 ## 5. Country/region resolution
 
@@ -428,11 +460,46 @@ reasons (useful for tuning filters later and required by the acceptance
 criteria's "store jobs" behaviour).
 
 ### Stage 2 — Cheap deterministic pre-filter
-Keyword/phrase overlap scoring against `title_aliases`, `role_families`,
-`primary_skills`, `secondary_skills`, sector terms, and seniority language.
-Produces a `prefilter_score` and `role_family_hints` (cached on `Job`). Jobs
-below a configurable `prefilter_threshold` are persisted but not scored in
-Stage 5 (keeps downstream processing cheap, per the requirement's intent).
+`run_prefilter(job, candidate, search, weights: PrefilterWeights)` (Milestone
+1.1, decisions.md D-029) considers configured signals from *both*
+`CandidateProfile` (`title_aliases`, `role_families`, `primary_skills`,
+`secondary_skills`, `transferable_skills`, `industries`, `sectors`) and
+`SearchProfile` (`target_titles`, `title_aliases`, `role_families`,
+`required_skills`, `preferred_skills`, `transferable_skills`,
+`included_keywords`, `included_industries`, `included_sectors`) — a job is no
+longer left unscored just because the run's *search* profile named a target
+title the candidate's own profile didn't happen to repeat. All phrase
+comparison goes through `matching/normalize.py`'s shared, profession-agnostic
+normalisation (case, underscores, `&`→"and", other punctuation/slashes/
+hyphens → space, collapsed whitespace — no stemming, no synonyms).
+
+A job passes Stage 2 if *either*:
+- **Strong title/role evidence gate**: a configured target title, title
+  alias, or role family (candidate or search profile) strongly matches the
+  job's *title* field specifically — an exact normalised-phrase match, or
+  token coverage ≥ `PrefilterWeights.strong_title_coverage` (default 0.75) of
+  that phrase's own words. This is the structural, stopword-list-free
+  safeguard against one generic word ("consultant", "manager", "strategy", …)
+  completing a multi-word configured phrase: a 2-word phrase needs both
+  words (1/2 = 0.5 fails), a 3-word phrase needs all 3, a 4-word phrase
+  tolerates at most one missing word. A single strong title-field match is,
+  by design, normally sufficient on its own — Stage 2 is a recall gate, not
+  the ranking model. A deliberately single-word configured phrase still
+  gates on its own; that's the profile author's explicit choice, not a
+  generic-token loophole the algorithm invented.
+- **Weighted additive score** ≥ `PrefilterWeights.threshold` (the
+  user-tunable `scoring_weights.yaml: prefilter_threshold`, unchanged
+  meaning): category ratios over title/role-family/skills/keywords/
+  industry-sector-context/seniority, each counting title-field evidence at
+  full weight and description-only evidence at `desc_only_damping` (default
+  0.5) — title matches outweigh description matches, since job descriptions
+  returned by a source may be truncated (see Stage 2 adapter note below).
+
+Produces a `prefilter_score`, `passed_threshold`, `role_family_hints` (cached
+on `Job`), and an `evidence: list[str]` explaining which configured signal
+matched, whether in the title or description, by which method
+(`exact_phrase` / `token_coverage=<ratio>`), and a trailing `decision:` entry
+stating why the job passed or failed.
 
 ### Stage 3 — Semantic similarity (not in M1)
 Interface reserved (`SemanticResult` field on `MatchResult`). Will use
@@ -453,7 +520,7 @@ Weighted components, each with visible evidence (`ScoreComponent`):
 
 | Component | Weight | M1 computation |
 |---|---|---|
-| Title / role-family match | 25% | Stage 2 keyword overlap against title_aliases/role_families |
+| Title / role-family match | 25% | keyword overlap against title_aliases/role_families from *both* CandidateProfile and SearchProfile (target_titles included) — decisions.md D-029 |
 | Responsibilities match | 15% | keyword/phrase overlap against description_text (proxy until Stage 3/4 exist) |
 | Required skills match | 20% | primary_skills overlap |
 | Transferable skills match | 10% | secondary_skills overlap (a missing secondary skill never zeroes this component — see below) |

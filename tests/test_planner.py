@@ -4,6 +4,19 @@ from job_scout.source_intelligence.planner import build_plan
 from tests.factories import make_candidate_profile, make_search_profile, make_source_entry
 
 
+def _adzuna_entry(**overrides: object) -> object:
+    base: dict[str, object] = {
+        "source_id": "adzuna_api",
+        "access_mode": AccessMode.PUBLIC_API,
+        "approval_status": ApprovalStatus.APPROVED,
+        "geographic_coverage": ["GB"],
+        "role_coverage": ["general"],
+        "config_status": ConfigStatus.NEEDS_CREDENTIALS,
+    }
+    base.update(overrides)
+    return make_source_entry(**base)
+
+
 def _limits(**overrides: object) -> config.ExecutionLimits:
     base = {
         "max_countries_per_run": 6,
@@ -240,3 +253,71 @@ def test_source_type_not_generic_aggregator_is_not_deduplicated() -> None:
     plan = build_plan(candidate, search, [a, government_b], _limits(), _weights())
     selected_ids = {s.source_id for s in plan.selected_sources}
     assert selected_ids == {"a", "b_gov"}
+
+
+# --- Runtime configuration status (decisions.md D-030) ----------------------
+
+
+def test_effective_config_status_defaults_to_declared_when_no_env_passed() -> None:
+    """build_plan(..., env=None) — the default — must not change behaviour
+    for any existing caller that doesn't opt in to runtime credential
+    checks."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"])
+    entry = _adzuna_entry()
+    plan = build_plan(candidate, search, [entry], _limits(), _weights())
+    selected = plan.selected_sources[0]
+    assert selected.config_status == ConfigStatus.NEEDS_CREDENTIALS
+    assert selected.effective_config_status == ConfigStatus.NEEDS_CREDENTIALS
+
+
+def test_effective_config_status_configured_when_credentials_present() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"])
+    entry = _adzuna_entry()  # declared config_status stays needs_credentials
+    env = config.EnvConfig(adzuna_app_id="id", adzuna_app_key="key")
+    plan = build_plan(candidate, search, [entry], _limits(), _weights(), env=env)
+    selected = plan.selected_sources[0]
+    assert selected.config_status == ConfigStatus.NEEDS_CREDENTIALS  # declared: unchanged
+    assert selected.effective_config_status == ConfigStatus.CONFIGURED  # runtime: live check
+
+
+def test_effective_config_status_needs_credentials_when_absent() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"])
+    entry = _adzuna_entry(config_status=ConfigStatus.CONFIGURED)  # declared says configured...
+    env = config.EnvConfig(adzuna_app_id=None, adzuna_app_key=None)
+    plan = build_plan(candidate, search, [entry], _limits(), _weights(), env=env)
+    selected = plan.selected_sources[0]
+    assert selected.config_status == ConfigStatus.CONFIGURED  # declared: unchanged
+    assert selected.effective_config_status == ConfigStatus.NEEDS_CREDENTIALS  # ...but isn't live
+
+
+def test_effective_config_status_partial_credentials_still_needs_credentials() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"])
+    entry = _adzuna_entry()
+    env = config.EnvConfig(adzuna_app_id="id", adzuna_app_key=None)
+    plan = build_plan(candidate, search, [entry], _limits(), _weights(), env=env)
+    selected = plan.selected_sources[0]
+    assert selected.effective_config_status == ConfigStatus.NEEDS_CREDENTIALS
+
+
+def test_effective_config_status_unaffected_for_sources_without_a_credential_rule() -> None:
+    """Only adzuna_api has a known credential check in Milestone 1
+    (decisions.md D-002/D-030); every other source_id's effective status
+    just mirrors its declared status."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"])
+    entry = make_source_entry(
+        source_id="some_other_source",
+        access_mode=AccessMode.PUBLIC_API,
+        approval_status=ApprovalStatus.APPROVED,
+        geographic_coverage=["GB"],
+        role_coverage=["general"],
+        config_status=ConfigStatus.NEEDS_SETUP,
+    )
+    env = config.EnvConfig(adzuna_app_id="id", adzuna_app_key="key")
+    plan = build_plan(candidate, search, [entry], _limits(), _weights(), env=env)
+    selected = plan.selected_sources[0]
+    assert selected.effective_config_status == ConfigStatus.NEEDS_SETUP

@@ -11,10 +11,11 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from job_scout.config import ConfigError, ExecutionLimits, SourceScoringWeights
+from job_scout.config import ConfigError, EnvConfig, ExecutionLimits, SourceScoringWeights
 from job_scout.countries import UnknownCountryError, resolve_regions
 from job_scout.models import (
     CandidateProfile,
+    ConfigStatus,
     CountryExclusion,
     ExcludedSource,
     SearchExecutionPlan,
@@ -199,6 +200,27 @@ def _score_source(
     return sum(breakdown.values()), breakdown
 
 
+def _effective_config_status(entry: SourceRegistryEntry, env: EnvConfig | None) -> ConfigStatus:
+    """Runtime-derived config status, distinct from `entry.config_status`
+    (the registry's static, user-maintained metadata — architecture.md
+    section 4 "config vs. database boundary", decisions.md D-009 keeps that
+    field YAML-first). `env is None` means the caller has no runtime
+    credential information available (e.g. an env-agnostic caller/test) —
+    fall back to the declared status unchanged rather than guessing.
+
+    Milestone 1 has exactly one adapter (`adzuna_api`, decisions.md D-002),
+    so it's the only source with a known credential check; every other
+    source_id's effective status is its declared status until it gets its
+    own adapter and a matching credential rule here."""
+    if env is None:
+        return entry.config_status
+    if entry.source_id == "adzuna_api":
+        if env.adzuna_app_id and env.adzuna_app_key:
+            return ConfigStatus.CONFIGURED
+        return ConfigStatus.NEEDS_CREDENTIALS
+    return entry.config_status
+
+
 def _is_generic_aggregator(entry: SourceRegistryEntry) -> bool:
     return entry.source_type == SourceType.AGGREGATOR_API and set(entry.role_coverage) == {
         _GENERAL_ROLE_COVERAGE
@@ -271,6 +293,7 @@ def build_plan(
     *,
     plan_id: str | None = None,
     generated_at: datetime | None = None,
+    env: EnvConfig | None = None,
 ) -> SearchExecutionPlan:
     selected_countries, skipped_countries = _resolve_selected_countries(
         search_profile, execution_limits
@@ -361,6 +384,7 @@ def build_plan(
                 search_queries=list(candidate_profile.title_aliases),
                 polling_frequency_minutes=entry.polling_frequency_minutes,
                 config_status=entry.config_status,
+                effective_config_status=_effective_config_status(entry, env),
                 required_setup_actions=[]
                 if decision.allowed
                 else list(entry.required_setup_actions),

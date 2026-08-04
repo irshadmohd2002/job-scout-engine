@@ -220,6 +220,141 @@ planner already resolved as supported via the registry's
 Flagging here so the user can verify their real `config/source_registry.yaml`
 against current Adzuna docs before relying on it.
 
+### D-029: Stage 2 pre-filter reads SearchProfile signals and gates on a
+single strong title/role match, not just CandidateProfile ratio averages
+**Decision**: A live UK Adzuna run (150 jobs fetched, only 1 scored)
+diagnosed a matching-quality bug, not a source or dedup bug: `run_prefilter`
+only ever read `CandidateProfile.title_aliases`/`role_families`/skills,
+never `SearchProfile.target_titles`/`title_aliases`/`role_families`/
+required-preferred-skills/`included_keywords`; matching was strict
+contiguous-substring containment with no punctuation normalisation
+(`&`, `/`, hyphens all broke otherwise-correct matches); and the four
+ratio-averaged categories meant one perfectly-matched signal (e.g. a single
+`title_aliases` hit out of 4 configured aliases) capped below the
+`prefilter_threshold` on its own. Fixed by: (1) a new shared
+`matching/normalize.py::normalize_text` used consistently by both the
+pre-filter and Stage 5 scoring's `keyword_overlap`; (2) `run_prefilter` now
+takes `(job, candidate, search, weights: PrefilterWeights)` and folds in
+`SearchProfile`'s title/role/skill/keyword/industry-sector signals alongside
+`CandidateProfile`'s; (3) a strong title/role evidence gate — a configured
+target title/title alias/role family that exactly matches the normalised
+job title, or covers >= `PrefilterWeights.strong_title_coverage` (0.75) of
+its own tokens in the title — now passes Stage 2 on that evidence alone,
+independent of the weighted ratio score; the pre-existing weighted score
+remains as an additive fallback for weaker/description-only evidence.
+`PrefilterWeights` is a new small type (`matching/prefilter.py`), not a YAML
+schema change — only its `threshold` field is sourced from the existing
+user-tunable `scoring_weights.yaml: prefilter_threshold`
+(`PrefilterWeights.from_scoring_weights`); the category sub-weights keep the
+same "not independently config-tunable" status the original module-private
+constants had. Stage 5's `title_role_family` component was extended to
+match: it now also reads `SearchProfile.target_titles`/`title_aliases`/
+`role_families`, tagging evidence by provenance (`search_target_title:`,
+`search_role_family:`, …) so a job that passed Stage 2 on search-profile
+evidence doesn't have that evidence silently dropped at Stage 5.
+**Alternatives**: Lowering `prefilter_threshold` alone (rejected — most of
+the audited failures scored exactly `0.0` evidence, so a lower threshold
+alone would not have helped, and would have widened recall indiscriminately
+rather than fixing the actual evidence gap); token-set (bag-of-words, order
+-independent) matching everywhere including the weighted score (rejected —
+kept the existing substring-containment semantics for the *additive* score
+to minimise behaviour change/risk there, and reserved the more permissive
+token-coverage rule for the new strong gate specifically, where its
+structural safeguard — requiring most/all of a multi-word phrase's own
+tokens — is what keeps single generic words like "consultant" from
+completing a match by themselves); changing `SourceSearchParams`/Adzuna
+`what_or` query construction in the same change (rejected — out of scope for
+this fix per explicit instruction; the noisy broad query is a separate,
+documented next tuning item, see below).
+**Why**: CLAUDE.md hard constraint 10 (profession-agnostic — no hard-coded
+vocabulary) and constraint 6 (no hard-coded single source list) both point
+the same direction here: the fix has to come from *reading more of the
+already-configured profile data* and *normalising comparison structurally*,
+never from adding profession-specific terms to `src/job_scout/`. The
+strong-gate token-coverage ratio is deliberately a pure structural
+calculation (matched-tokens / phrase-tokens), not a stopword list, so it
+stays profession-agnostic while still refusing to let one common word stand
+in for an entire configured multi-word phrase.
+**Known next tuning item (explicitly not fixed here)**: `SourceSearchParams
+.keywords`/Adzuna's `what_or` query is still built from
+`candidate_profile.title_aliases` only (`planner.py`), which Adzuna's
+OR-word semantics turn into an OR over individual words — this is what
+produces most of the noisy recruitment/sales/travel-consultant volume in the
+fetched set. This fix only changes which *already-fetched* jobs reach Stage
+5 scoring; it deliberately does not touch retrieval-query construction, per
+explicit instruction, so the live result distribution can be inspected
+before redesigning the query (e.g. sourcing `what_or`/multiple queries from
+`SearchProfile.target_titles` instead).
+
+### D-030: `SelectedSource.effective_config_status` — a computed runtime
+view of credential availability, not a change to the registry's static
+`config_status`
+**Decision**: The live run above also showed `config_status=needs_credentials`
+printed even though the same run successfully used real
+`ADZUNA_APP_ID`/`ADZUNA_APP_KEY` — because `config_status` is (correctly,
+per D-009) static YAML the user must hand-maintain, and nothing cross-checked
+it against actual credential presence. Added `SelectedSource
+.effective_config_status`, computed by a new `planner._effective_config_status
+(entry, env: EnvConfig | None)`: for `adzuna_api` specifically, `configured`
+when both env vars are present, else `needs_credentials`, regardless of the
+declared value; every other `source_id` (no adapter/credential rule yet)
+falls back to its declared `config_status` unchanged. `build_plan` gained an
+`env: EnvConfig | None = None` keyword parameter (default preserves prior
+behaviour exactly for every existing caller/test that doesn't pass one — no
+behaviour change without opt-in). The CLI's `plan` command now also loads
+`.env` (a new `--env-file` option, mirroring `run-once`'s) purely to compute
+this display value — `load_env` only reads a file and `os.environ`, it never
+performs a network call, so `plan`'s "never touches a source adapter or API
+quota" guarantee (MILESTONE_1.md) is unaffected; a dedicated test
+(`test_plan_command_never_makes_http_call`) already covers this and
+continues to pass. Both `config_status` (declared) and
+`effective_config_status` (runtime) are printed side by side, labelled, in
+`job-scout plan`/`run-once` human output; neither ever prints the credential
+value itself.
+**Alternatives**: Writing the computed status back into the registry YAML
+(rejected outright — directly contradicts D-009's "no runtime mutation of
+YAML-first config" and would require a `SourceRegistryRepository` that
+architecture.md §4 explicitly defers to a future milestone); a fully generic
+"does this source have credentials" mechanism keyed off new registry fields
+like `required_env_vars` (rejected as scope creep for a narrowly-scoped fix
+— Milestone 1 has exactly one adapter, decisions.md D-002, so a single
+`if source_id == "adzuna_api"` check is the smallest change that solves the
+actual live problem, consistent with the existing `source_id == "adzuna_api"`
+special-case already present in `pipeline.py`'s `_default_adapter_factory`).
+**Why**: The mismatch was a genuine reporting gap the user could not resolve
+by editing their own config correctly (there is no "runtime" value to hand
+-author), unlike this session's other private-config recommendation
+(D-029's audit — updating the registry's *declared* `config_status` by hand
+remains valid and is still shown, just no longer the only signal).
+
+### D-031: Adzuna "full description" request parameter investigated —
+confirmed not to exist; documented as a known limitation, not implemented
+**Decision**: Checked `developer.adzuna.com`'s Search endpoint documentation
+directly (not merely re-reading D-016's earlier note) specifically for a
+parameter to request the untruncated job description. The docs list
+`results_per_page`, `what`, `what_or`, `what_exclude`, `where`, `sort_by`,
+`salary_min`, `full_time`, `permanent`, `content-type`, and explicitly state
+(twice) that the API "currently only provide[s] a snippet of the job
+description in the response" — no `full_description` parameter or
+equivalent is documented anywhere found. Per this session's explicit
+instruction ("only add such a parameter if confirmed by the existing
+official API contract or authoritative documentation... if not confirmed,
+do not guess, retain current behaviour"), `AdzunaAdapter._build_query` was
+**not** changed. Documented the truncation as a known limitation in
+`architecture.md` §3 instead (see the AdzunaAdapter section).
+**Alternatives**: Adding an unconfirmed `full_description=1` parameter
+speculatively (rejected — this is exactly the class of unverified-secondary
+-source mistake D-016 already flagged and declined to repeat; an
+undocumented parameter could silently do nothing, error, or (worse) change
+billing/quota behaviour with no way to verify from this codebase alone).
+**Why**: Matches this project's established evidence bar for source-contract
+claims (D-016, D-027, D-028 — verify against the source itself, don't guess
+from unclear/secondary information) and the explicit instruction for this
+task. Title matching (this fix's actual scope) does not depend on full
+descriptions — Stage 2's strong gate and the title-vs-description weighting
+in the weighted fallback score are both title-field-first specifically
+because the description is known to be truncated.
+
 ### D-011: CLI ships both `run-once` and `plan` in Milestone 1
 **Decision**: Confirmed. In addition to the required `run-once` acceptance
 command, M1 includes `job-scout plan --profile X`, which prints the

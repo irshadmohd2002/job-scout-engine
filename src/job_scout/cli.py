@@ -196,7 +196,10 @@ def _format_plan_human(plan: SearchExecutionPlan) -> str:
         lines.append(
             f"      access_mode={source.access_mode}  approval_status={source.approval_status}"
         )
-        lines.append(f"      config_status={source.config_status}")
+        lines.append(
+            f"      config_status={source.config_status} (declared, static registry metadata)  "
+            f"effective_config_status={source.effective_config_status} (runtime credential check)"
+        )
         lines.append(f"      supported_countries={source.supported_countries}")
         if source.unsupported_countries:
             unsupported = ", ".join(
@@ -246,6 +249,13 @@ def plan(
         help="Path to execution_limits.yaml (default: resolved from --data-dir, "
         "falling back to the packaged template).",
     ),
+    env_path: Path | None = typer.Option(
+        None,
+        "--env-file",
+        help="Path to .env, read only to compute effective_config_status per source "
+        "(default: resolved data directory's .env, falling back to ./.env). Loading this "
+        "file never performs a network call — plan still never touches a source adapter.",
+    ),
     data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
     json_output: bool = typer.Option(
         False, "--json", help="Print the full structured plan as JSON."
@@ -263,12 +273,14 @@ def plan(
             source_scoring_weights_path=None,
             data_dir=data_dir,
         )
+        env = load_env(env_path, data_dir=data_dir)
         result = build_plan(
             inputs.candidate_profile,
             inputs.search_profile,
             inputs.registry,
             inputs.execution_limits,
             inputs.source_scoring_weights,
+            env=env,
         )
     except ConfigError as exc:
         typer.echo(f"Configuration error: {exc}", err=True)
@@ -405,6 +417,7 @@ def run_once_command(
         inputs.registry,
         inputs.execution_limits,
         inputs.source_scoring_weights,
+        env=env,
     )
     if not json_output:
         typer.echo(_format_plan_human(plan_preview))

@@ -338,6 +338,100 @@ def test_gb_ie_profile_executes_gb_via_adzuna_without_ie_in_params(tmp_path) -> 
         ]
 
 
+def _custom_payload(job_id: str, title: str, description: str) -> dict:
+    return {
+        "id": job_id,
+        "title": title,
+        "company": {"display_name": f"Example Corp {job_id}"},
+        "location": {"display_name": "London"},
+        "redirect_url": f"https://example.com/jobs/{job_id}",
+        "created": "2026-07-01T10:00:00Z",
+        "description": f"<p>{description}</p>",
+        "salary_min": 60000,
+        "salary_max": 80000,
+        "contract_time": "full_time",
+        "_query_country": "GB",
+    }
+
+
+def test_search_profile_target_title_reaches_scoring_while_irrelevant_and_hard_filtered_jobs_do_not(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    """decisions.md D-029/pipeline wiring: SearchProfile is threaded into
+    run_prefilter, so a job matching only SearchProfile.target_titles (the
+    candidate profile has no matching fields at all) still reaches Stage 5
+    scoring; an unrelated job stays store_only/unscored; a job that fails
+    Stage 1 hard filters is rejected separately and never reaches
+    prefilter/scoring at all. All three are persisted regardless."""
+    candidate = make_candidate_profile(
+        title_aliases=[], role_families=[], primary_skills=[], secondary_skills=[]
+    )
+    search = make_search_profile(
+        included_countries=["GB"], target_titles=["Chief of Staff"], role_families=[]
+    )
+    registry = [_adzuna_registry_entry()]
+
+    records = [
+        RawJobRecord(
+            source_id="adzuna_api",
+            external_id="relevant",
+            raw_url="https://example.com/jobs/relevant",
+            raw_payload=_custom_payload(
+                "relevant", "Chief of Staff", "Support the CEO office, 4-8 years experience."
+            ),
+            fetched_at=datetime.now(UTC),
+        ),
+        RawJobRecord(
+            source_id="adzuna_api",
+            external_id="irrelevant",
+            raw_url="https://example.com/jobs/irrelevant",
+            raw_payload=_custom_payload(
+                "irrelevant",
+                "Recruitment Consultant",
+                "Assist clients with recruitment across sectors, 4-8 years experience.",
+            ),
+            fetched_at=datetime.now(UTC),
+        ),
+        RawJobRecord(
+            source_id="adzuna_api",
+            external_id="hard_filtered",
+            raw_payload=_custom_payload(
+                "hard_filtered",
+                "Chief of Staff",
+                "We are unable to offer sponsorship for this role, 4-8 years experience.",
+            ),
+            raw_url="https://example.com/jobs/hard_filtered",
+            fetched_at=datetime.now(UTC),
+        ),
+    ]
+    fake_adapter = _FakeAdapter(records)
+
+    with SqliteJobRepository(tmp_path / "db.sqlite3") as repo:
+        result = run_once(
+            candidate_profile=candidate,
+            search_profile=search,
+            registry=registry,
+            execution_limits=_limits(),
+            scoring_weights=_weights(),
+            source_scoring_weights=_source_weights(),
+            repository=repo,
+            env=_env(),
+            dry_run=False,
+            adapter_factory=lambda source_id: fake_adapter,
+        )
+
+        by_id = {job.external_ids[0].external_id: match for job, match in result.results}
+        assert by_id["relevant"].final_score is not None
+        assert by_id["relevant"].notification_tier.value != "rejected"
+        assert by_id["irrelevant"].final_score is None
+        assert by_id["irrelevant"].notification_tier.value == "store_only"
+        assert by_id["hard_filtered"].final_score is None
+        assert by_id["hard_filtered"].notification_tier.value == "rejected"
+
+        job_count = repo._conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        assert job_count == 3  # all three persisted regardless of outcome
+
+
 def test_unconfigured_adapter_produces_isolated_failed_run_not_a_crash(tmp_path) -> None:  # type: ignore[no-untyped-def]
     candidate = make_candidate_profile()
     search = make_search_profile(included_countries=["GB"])

@@ -16,7 +16,7 @@ import pytest
 
 from job_scout import config
 from job_scout.matching.hard_filters import evaluate_hard_filters
-from job_scout.matching.prefilter import run_prefilter
+from job_scout.matching.prefilter import PrefilterWeights, run_prefilter
 from job_scout.matching.scoring import compute_score_components
 from job_scout.models import Job, Location
 from job_scout.source_intelligence.planner import build_plan
@@ -205,7 +205,9 @@ def test_full_pipeline_stages_for_each_profession(
     assert hard_filter_result.passed is expect_pass
 
     weights = config.load_scoring_weights(data_dir=tmp_path / "no-such-data-dir")
-    prefilter_result = run_prefilter(job, candidate, weights)
+    prefilter_result = run_prefilter(
+        job, candidate, search, PrefilterWeights.from_scoring_weights(weights)
+    )
     assert prefilter_result.score > 0
     assert prefilter_result.evidence  # some overlap evidence produced
 

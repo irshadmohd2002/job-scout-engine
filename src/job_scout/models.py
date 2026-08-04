@@ -394,7 +394,8 @@ class SelectedSource(BaseModel):
     search_params: SourceSearchParams | None
     search_queries: list[str]
     polling_frequency_minutes: int | None
-    config_status: ConfigStatus
+    config_status: ConfigStatus  # declared: static registry metadata, user-maintained
+    effective_config_status: ConfigStatus  # runtime: derived from live credential checks
     required_setup_actions: list[str]
     region_country_coverage: list[str]
     priority: int

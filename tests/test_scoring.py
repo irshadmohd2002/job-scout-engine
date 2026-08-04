@@ -169,6 +169,49 @@ def test_build_match_result_store_only_when_below_prefilter_threshold() -> None:
     assert result.score_components == []  # not scored further, per Stage 2 gating
 
 
+def test_search_profile_target_title_evidence_appears_in_title_role_family_component() -> None:
+    """decisions.md D-029: a job that clears Stage 2 on SearchProfile.target_titles
+    evidence must not have that evidence silently dropped at Stage 5."""
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=["Strategy Manager"], role_families=[])
+    job = make_job(title="Strategy Manager", description_text="A generic role.")
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+    assert title_role_family.raw_value > 0.0
+    assert any(e.startswith("search_target_title:") for e in title_role_family.evidence)
+
+
+def test_search_profile_role_family_evidence_appears_in_title_role_family_component() -> None:
+    candidate = make_candidate_profile(title_aliases=[], role_families=[])
+    search = make_search_profile(target_titles=[], role_families=["business_transformation"])
+    job = make_job(
+        title="Business Transformation Lead",
+        description_text="A generic role.",
+    )
+    components = compute_score_components(job, candidate, search, _weights())
+    title_role_family = next(c for c in components if c.name == "title_role_family")
+    assert title_role_family.raw_value > 0.0
+    assert any(e.startswith("search_role_family:") for e in title_role_family.evidence)
+
+
+def test_final_score_is_deterministic_across_repeated_calls() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(target_titles=["Strategy Manager"])
+    job = make_job(
+        title="Strategy Manager",
+        description_text="Strategy and transformation focus, 4-8 years experience.",
+    )
+    hard_filter_result = HardFilterResult(passed=True, rejections=[])
+    prefilter_result = PrefilterResult(score=0.9, passed_threshold=True)
+    first = build_match_result(
+        job, candidate, search, hard_filter_result, prefilter_result, _weights()
+    )
+    second = build_match_result(
+        job, candidate, search, hard_filter_result, prefilter_result, _weights()
+    )
+    assert first.final_score == second.final_score
+
+
 def test_build_match_result_scores_when_both_stages_pass() -> None:
     candidate = make_candidate_profile()
     search = make_search_profile()

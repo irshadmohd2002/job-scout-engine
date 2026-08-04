@@ -17,6 +17,7 @@ import re
 
 from job_scout.config import ScoringWeights
 from job_scout.matching.hard_filters import parse_experience_range
+from job_scout.matching.normalize import dedupe_preserve_order
 from job_scout.matching.prefilter import keyword_overlap
 from job_scout.models import (
     CandidateProfile,
@@ -60,21 +61,39 @@ def _first_match(patterns: list[re.Pattern[str]], text: str) -> str | None:
 
 
 def _title_role_family_component(
-    job: Job, candidate: CandidateProfile, weight: float
+    job: Job, candidate: CandidateProfile, search: SearchProfile, weight: float
 ) -> ScoreComponent:
+    # Milestone 1.1: the title/role universe is candidate-profile *and*
+    # search-profile signals — a job that reached Stage 5 on the strength of
+    # a SearchProfile.target_titles match (Stage 2's strong-gate) must not
+    # have that evidence silently dropped here (see the prefilter/scoring
+    # consistency requirement this component was extended for).
     combined_text = f"{job.title} {job.description_text}"
-    title_matches = keyword_overlap(candidate.title_aliases, combined_text)
-    role_matches = keyword_overlap(candidate.role_families, combined_text)
-    title_ratio = (
-        len(title_matches) / len(candidate.title_aliases) if candidate.title_aliases else 0.0
+    candidate_title_matches = keyword_overlap(candidate.title_aliases, combined_text)
+    search_target_title_matches = keyword_overlap(search.target_titles, combined_text)
+    search_title_alias_matches = keyword_overlap(search.title_aliases, combined_text)
+    candidate_role_matches = keyword_overlap(candidate.role_families, combined_text)
+    search_role_matches = keyword_overlap(search.role_families, combined_text)
+
+    title_universe = dedupe_preserve_order(
+        [*candidate.title_aliases, *search.target_titles, *search.title_aliases]
     )
-    role_ratio = (
-        len(role_matches) / len(candidate.role_families) if candidate.role_families else 0.0
+    role_universe = dedupe_preserve_order([*candidate.role_families, *search.role_families])
+    title_matches = dedupe_preserve_order(
+        [*candidate_title_matches, *search_target_title_matches, *search_title_alias_matches]
     )
+    role_matches = dedupe_preserve_order([*candidate_role_matches, *search_role_matches])
+
+    title_ratio = len(title_matches) / len(title_universe) if title_universe else 0.0
+    role_ratio = len(role_matches) / len(role_universe) if role_universe else 0.0
     raw = (title_ratio + role_ratio) / 2
-    evidence = [f"title_alias:{m}" for m in title_matches] + [
-        f"role_family:{m}" for m in role_matches
-    ]
+    evidence = (
+        [f"title_alias:{m}" for m in candidate_title_matches]
+        + [f"search_target_title:{m}" for m in search_target_title_matches]
+        + [f"search_title_alias:{m}" for m in search_title_alias_matches]
+        + [f"role_family:{m}" for m in candidate_role_matches]
+        + [f"search_role_family:{m}" for m in search_role_matches]
+    )
     return ScoreComponent(
         name="title_role_family",
         weight=weight,
@@ -256,7 +275,7 @@ def compute_score_components(
 ) -> list[ScoreComponent]:
     w = weights
     return [
-        _title_role_family_component(job, candidate, w.title_role_family),
+        _title_role_family_component(job, candidate, search, w.title_role_family),
         _responsibilities_component(job, candidate, w.responsibilities),
         _required_skills_component(job, candidate, w.required_skills),
         _transferable_skills_component(job, candidate, w.transferable_skills),

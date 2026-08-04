@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from job_scout.config import EnvConfig, ExecutionLimits, ScoringWeights, SourceScoringWeights
 from job_scout.deduplication import DedupTier, compute_fingerprint, match_against_recent
 from job_scout.matching.hard_filters import evaluate_hard_filters
-from job_scout.matching.prefilter import run_prefilter
+from job_scout.matching.prefilter import PrefilterWeights, run_prefilter
 from job_scout.matching.scoring import build_match_result
 from job_scout.models import (
     CandidateProfile,
@@ -178,11 +178,17 @@ def run_once(
     _ = dry_run
 
     plan = build_plan(
-        candidate_profile, search_profile, registry, execution_limits, source_scoring_weights
+        candidate_profile,
+        search_profile,
+        registry,
+        execution_limits,
+        source_scoring_weights,
+        env=env,
     )
 
     factory = adapter_factory or _default_adapter_factory(env, execution_limits)
     registry_by_id = {entry.source_id: entry for entry in registry}
+    prefilter_weights = PrefilterWeights.from_scoring_weights(scoring_weights)
 
     job_cap = _effective_job_limit(execution_limits, limit)
     processed_count = 0
@@ -284,7 +290,9 @@ def run_once(
             hard_filter_result = evaluate_hard_filters(
                 effective_job, candidate_profile, search_profile
             )
-            prefilter_result = run_prefilter(effective_job, candidate_profile, scoring_weights)
+            prefilter_result = run_prefilter(
+                effective_job, candidate_profile, search_profile, prefilter_weights
+            )
 
             if is_new:
                 effective_job = effective_job.model_copy(

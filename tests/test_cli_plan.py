@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from job_scout.cli import app
@@ -71,18 +72,24 @@ sources:
 """
 
 
-def _write_config(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _write_config(tmp_path: Path, env_text: str = "") -> tuple[Path, Path, Path, Path]:
     candidate = tmp_path / "candidate_profile.yaml"
     search = tmp_path / "search_profiles.yaml"
     registry = tmp_path / "source_registry.yaml"
+    env = tmp_path / ".env"
     candidate.write_text(CANDIDATE_YAML, encoding="utf-8")
     search.write_text(SEARCH_PROFILES_YAML, encoding="utf-8")
     registry.write_text(SOURCE_REGISTRY_YAML, encoding="utf-8")
-    return candidate, search, registry
+    # Always write an explicit (possibly empty) .env and pass --env-file so
+    # these tests never accidentally pick up a real .env from the machine's
+    # actual per-user data directory (resolve_app_paths' default) — test
+    # isolation, not a behaviour requirement.
+    env.write_text(env_text, encoding="utf-8")
+    return candidate, search, registry, env
 
 
 def test_plan_command_human_output(tmp_path: Path) -> None:
-    candidate, search, registry = _write_config(tmp_path)
+    candidate, search, registry, env = _write_config(tmp_path)
     result = runner.invoke(
         app,
         [
@@ -95,6 +102,8 @@ def test_plan_command_human_output(tmp_path: Path) -> None:
             str(search),
             "--source-registry",
             str(registry),
+            "--env-file",
+            str(env),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -105,7 +114,7 @@ def test_plan_command_human_output(tmp_path: Path) -> None:
 
 
 def test_plan_command_json_output(tmp_path: Path) -> None:
-    candidate, search, registry = _write_config(tmp_path)
+    candidate, search, registry, env = _write_config(tmp_path)
     result = runner.invoke(
         app,
         [
@@ -118,6 +127,8 @@ def test_plan_command_json_output(tmp_path: Path) -> None:
             str(search),
             "--source-registry",
             str(registry),
+            "--env-file",
+            str(env),
             "--json",
         ],
     )
@@ -152,7 +163,9 @@ def test_plan_command_never_makes_http_call(tmp_path: Path, monkeypatch) -> None
         raise AssertionError("plan command must never perform HTTP requests")
 
     monkeypatch.setattr(httpx.Client, "send", _fail)
-    candidate, search, registry = _write_config(tmp_path)
+    candidate, search, registry, env = _write_config(
+        tmp_path, env_text="ADZUNA_APP_ID=id\nADZUNA_APP_KEY=key\n"
+    )
     result = runner.invoke(
         app,
         [
@@ -165,6 +178,98 @@ def test_plan_command_never_makes_http_call(tmp_path: Path, monkeypatch) -> None
             str(search),
             "--source-registry",
             str(registry),
+            "--env-file",
+            str(env),
         ],
     )
     assert result.exit_code == 0, result.output
+
+
+# --- Runtime configuration status (decisions.md D-030) ----------------------
+
+
+def test_plan_shows_effective_configured_when_credentials_present(tmp_path: Path) -> None:
+    candidate, search, registry, env = _write_config(
+        tmp_path, env_text="ADZUNA_APP_ID=real-id-value\nADZUNA_APP_KEY=real-key-value\n"
+    )
+    result = runner.invoke(
+        app,
+        [
+            "plan",
+            "--profile",
+            "strategy-global",
+            "--candidate-profile",
+            str(candidate),
+            "--search-profiles",
+            str(search),
+            "--source-registry",
+            str(registry),
+            "--env-file",
+            str(env),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # declared registry status is still shown, unchanged...
+    assert "config_status=needs_credentials" in result.output
+    # ...alongside the live, credential-derived effective status
+    assert "effective_config_status=configured" in result.output
+    # never echo the credential values themselves
+    assert "real-id-value" not in result.output
+    assert "real-key-value" not in result.output
+
+
+def test_plan_shows_effective_needs_credentials_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ADZUNA_APP_ID", raising=False)
+    monkeypatch.delenv("ADZUNA_APP_KEY", raising=False)
+    candidate, search, registry, env = _write_config(tmp_path, env_text="")
+    result = runner.invoke(
+        app,
+        [
+            "plan",
+            "--profile",
+            "strategy-global",
+            "--candidate-profile",
+            str(candidate),
+            "--search-profiles",
+            str(search),
+            "--source-registry",
+            str(registry),
+            "--env-file",
+            str(env),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "config_status=needs_credentials" in result.output
+    assert "effective_config_status=needs_credentials" in result.output
+
+
+def test_plan_json_output_includes_effective_config_status(tmp_path: Path) -> None:
+    candidate, search, registry, env = _write_config(
+        tmp_path, env_text="ADZUNA_APP_ID=id\nADZUNA_APP_KEY=key\n"
+    )
+    result = runner.invoke(
+        app,
+        [
+            "plan",
+            "--profile",
+            "strategy-global",
+            "--candidate-profile",
+            str(candidate),
+            "--search-profiles",
+            str(search),
+            "--source-registry",
+            str(registry),
+            "--env-file",
+            str(env),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    import json
+
+    data = json.loads(result.output)
+    selected = data["selected_sources"][0]
+    assert selected["config_status"] == "needs_credentials"
+    assert selected["effective_config_status"] == "configured"
