@@ -940,3 +940,174 @@ satisfied. `notification_thresholds`, Adzuna query construction, Milestone
 for this task and untouched — this ADR and its code change only ever
 *read* the private database/config to verify the fix, never wrote to
 either.
+
+---
+
+## Milestone 2 — Planning (scope defined, not implemented)
+
+The ADRs below record decisions made while writing `MILESTONE_2.md`, before
+any Milestone 2 code changed — same discipline `MILESTONE_1_1.md`'s "Open
+items before implementation: None outstanding... written first" used.
+Milestone 1/1.1's baseline (288 passed / 1 skipped / 3 deselected, `ruff`/
+`mypy --strict` clean) was re-verified unchanged during this planning pass;
+no application code was modified.
+
+### D-035: Email-alert ingestion and the general source-discovery workflow
+are re-sequenced out of Milestone 2, to Milestone 3
+**Decision**: The pre-existing `ROADMAP.md` draft listed "email-alert
+ingestion" (Naukri, iimjobs, foundit, Indeed alerts, Naukrigulf, GulfTalent,
+Bayt) and a general human-reviewed source-discovery workflow under
+"Milestone 2." This planning pass's own task brief scoped Milestone 2 as
+"multi-source discovery, query quality, and visa/sponsorship enrichment"
+and its Workstream B evaluation list named only API/feed/government sources
+(Adzuna, Greenhouse, Lever, UK Find a Job, EURES, Canada Job Bank,
+SEEK/ANZ) — never the email-alert portals the old draft named, and its
+explicit out-of-scope list separately excludes "email notifications." Both
+items are moved to Milestone 3 in the `ROADMAP.md` update accompanying this
+ADR.
+**Alternatives**: Keep both in Milestone 2 as originally drafted, since
+`architecture.md` §9 and the `email_alert`/`search_discovery` access modes
+already exist in the schema; treat the task brief's silence on them as
+oversight rather than intentional narrowing.
+**Why**: Email-alert ingestion is a materially different capability from
+API/feed adapter work — it needs mailbox authentication and per-portal
+parsing heuristics, neither of which any part of this planning pass's
+Workstream A–F investigated or designed. Building it "along the way" inside
+a milestone scoped and reviewed for adapter/query/dedup/visa work would be
+exactly the kind of over-scoping CLAUDE.md hard constraint 7 warns this
+project has a documented tendency toward. A general, automatic
+source-discovery *workflow* is a distinct, larger capability from this
+milestone's own *manual* discovery (the source priority matrix in
+`MILESTONE_2.md` Deliverable 4) — conflating "we manually evaluated some
+sources this session" with "we built a tool that does this automatically
+and repeatably" would overstate what's actually in scope. Flagged
+explicitly as an open decision for the user in the preparation report
+accompanying this ADR, since it changes a previously-stated milestone
+boundary.
+
+### D-036: `VisaAssessment`/`VisaStatus` keep their existing shape for
+Milestone 2; the task brief's alternative nine-value enum is not adopted
+**Decision**: Milestone 2's sponsorship-enrichment design (`MILESTONE_2.md`
+Workstream D) wires the *existing* `VisaAssessment` model (architecture.md
+§2.12, unchanged since Milestone 1) into the pipeline for the first time,
+rather than replacing `VisaStatus`'s six values (`confirmed_yes|likely|
+employer_eligible|unknown|confirmed_no|not_required`) with the flatter
+nine-value enum the planning task's own brief sketched as an illustrative
+option (`confirmed_sponsorship_available`, `sponsor_registered_employer`,
+`citizenship_restriction`, `relocation_available`, etc.).
+**Alternatives**: Adopt the brief's proposed enum directly, since it was
+offered as a concrete suggestion.
+**Why**: The task brief itself said to "use a smaller enum if the current
+architecture already defines a suitable one," and it does: `VisaStatus`
+already separates the *sponsorship* dimension (its six values) from
+*independent* evidence dimensions the brief's flat enum would collapse
+together — `citizenship_restrictions: list[str]`,
+`existing_work_authorisation_required: bool | None`, and
+`relocation_support_evidence: list[str]` are already their own fields on
+`VisaAssessment`. A job can simultaneously be `employer_eligible` *and*
+citizenship-restricted *and* have relocation evidence — three independent
+facts a single flat status enum cannot represent at once, but the existing
+model already can. Replacing it would also be a breaking schema change to
+a model `save_visa_assessment`'s reserved SQLite table already assumes the
+shape of, for no representational gain.
+
+### D-037: Query planner is a bounded hybrid of per-target-title exact
+queries and one grouped fallback, not a single broad OR or one query per
+configured phrase
+**Decision**: `MILESTONE_2.md`'s query-planning design builds one
+exact-phrase `PlannedQuery` per `SearchProfile.target_titles` entry (capped
+by a new `max_queries_per_source_country` execution limit, profile order
+preserved, same truncation-with-recorded-note pattern as the existing
+country cap, D-015), plus at most one additional grouped OR-fallback query
+built from `title_aliases`/`role_families`/`required_skills` when budget
+remains or no `target_titles` are configured. `SourceAdapter.fetch()`'s
+Protocol and `AdzunaAdapter` itself are unchanged — the pipeline calls
+`fetch()` once per planned query instead of once per source.
+**Alternatives**: Keep the current single broad OR query (rejected — this
+is the exact D-029-flagged "known next tuning item" this milestone exists
+partly to fix); one query per every configured title/alias/role-family
+phrase with no grouping (rejected — unbounded request-count growth,
+`architecture.md` §11a's guardrail philosophy requires every fan-out
+dimension to have an explicit, config-visible cap); grouped role-family-only
+queries with no per-title precision (rejected — re-creates a milder version
+of the current dilution problem, since an exact `target_titles` phrase gets
+folded back into a family-level OR instead of getting its own precise
+query).
+**Why**: `target_titles` is the run's most explicit, highest-intent
+configured signal (the same precedence Stage 5 scoring's `_TITLE_TIER_
+WEIGHTS` already gives it over `title_aliases`/role families, D-032/D-034)
+— it deserves the most precise query type a source supports, and CLAUDE.md
+hard constraint 6/10 requires the mechanism to come from reading more
+already-configured profile data, not new hard-coded vocabulary. Capping by
+a new, explicit `ExecutionLimits` field (not a module-private constant)
+matches every existing guardrail's own "config, not hard-coded" treatment
+(§11a).
+
+### D-038: Cross-source deduplication adds an exact-canonical-URL tier and a
+bounded token-overlap "probable duplicate" tier; no new `SourceObservation`
+model
+**Decision**: `MILESTONE_2.md` Workstream C adds two deterministic
+dedup signals — an exact cross-source match on `canonical_url` alone
+(ignoring `external_source_id`, unlike Tier 1), and a "probable duplicate"
+tier requiring the existing company+title+location identity match *plus*
+at least one of: identical `description_fingerprint` (kept from M1), bounded
+token-set (Jaccard) similarity above a conservative threshold, or a close
+`posted_date` combined with matching salary fields. No embeddings, per
+explicit instruction. Separately, Workstream F concludes **no new
+`SourceObservation` model** is needed: auditing `SqliteJobRepository
+.merge_provenance` found it already inserts a fresh `source_provenance` row
+on every call (including repeat fetches), making the existing table already
+an append-only fetch-observation log in practice — the only real gap is a
+missing read method (`JobRepository.list_provenance`), not a missing model.
+**Alternatives**: A dedicated `SourceObservation` model/table distinct from
+`SourceProvenance` (considered, per the task brief's own suggestion);
+embedding-based near-duplicate detection (explicitly excluded by the task);
+treating any single one of the new corroborating signals (Jaccard alone, or
+posted-date alone) as sufficient without the company+title+location
+precondition (rejected — too high a false-merge risk, see `MILESTONE_2.md`
+risk R-8).
+**Why**: `architecture.md` §8 already earmarks a future swap of
+`description_fingerprint`'s exact-hash approach for something more
+tolerant ("A future milestone may switch to SimHash for near-duplicate
+detection... the field is a plain string so that swap doesn't change the
+schema") — the bounded-Jaccard tier is exactly that anticipated swap,
+scoped to Milestone 2 without embeddings. The task's own explicit
+instruction — "do not add abstraction unless cross-source deduplication
+actually requires it" — applies directly to the `SourceObservation`
+question: the audit found the existing schema already does the job once a
+read method exists, so adding a parallel model would be exactly the
+unjustified abstraction CLAUDE.md hard constraint 9 and `architecture.md`
+§12 already rule out project-wide.
+
+### D-039: Sponsor-register enrichment is import-only (UK, NL); no live
+government-register downloading, no fuzzy name matching, in Milestone 2
+**Decision**: `MILESTONE_2.md` Workstream D designs `job-scout sponsors
+import <file> --country <CC> --register <name>` to parse a
+user-already-downloaded register snapshot (UK Home Office licensed-sponsor
+register; Netherlands IND recognised-sponsors register) into a new
+`sponsor_registry_entries` SQLite table, joined to jobs via exact
+normalized-employer-name matching (reusing `deduplication.normalize_company`
+— one normalisation function for both cross-source dedup and sponsor
+joining, not two). No other country's register is assumed to exist; no
+code in this design ever downloads or scrapes a government site itself; no
+fuzzy/alias name matching is attempted.
+**Alternatives**: Automating the register download (rejected outright —
+explicit task instruction, and CLAUDE.md hard constraint 1's "no scraping
+without clear permission" applies to government sites exactly as it does to
+job boards); fuzzy/Levenshtein company-name matching to catch subsidiaries
+and trading names (rejected for M2 — real false-positive risk with no
+mitigation designed yet, `MILESTONE_2.md` risk R-9; deferred, not solved,
+listed explicitly in `ROADMAP.md`'s "Explicitly not planned until asked
+for"); inventing a register for countries without a confirmed public one
+(rejected — directly contradicts CLAUDE.md hard constraint 4, "visa/
+sponsorship is never a boolean... a sponsor-registry match means 'may be
+eligible to sponsor,' never 'will sponsor'" — the same caution applies to
+inventing register coverage that doesn't exist).
+**Why**: Matches the task's explicit instruction ("do not implement live
+government-register downloading during this planning pass") and this
+project's evidence bar for source-contract claims already established by
+D-016/D-027/D-028/D-031 — verify against the source itself or a user-
+supplied artifact, never guess. Registry-match confidence is deliberately
+capped below "confirmed" in the evidence-precedence design (`MILESTONE_2.md`
+"Sponsorship/visa enrichment design") specifically because exact-name
+matching alone cannot rule out a subsidiary/trading-name collision.
