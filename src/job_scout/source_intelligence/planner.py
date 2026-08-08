@@ -26,6 +26,7 @@ from job_scout.models import (
     SourceType,
 )
 from job_scout.source_intelligence.compliance import authorize
+from job_scout.source_intelligence.query_planner import build_planned_queries
 
 _GLOBAL_COVERAGE = "global"
 _GENERAL_ROLE_COVERAGE = "general"
@@ -353,6 +354,24 @@ def build_plan(
         ]
         decision = authorize(entry, entry.access_mode)
 
+        # Milestone 2 Deliverable 5 step 3: SearchProfile-driven PlannedQuery
+        # generation, planning data only. `search_params` below (the M1/1.1
+        # single-broad-query representation `AdzunaAdapter.fetch()` actually
+        # reads) is left byte-for-byte unchanged so runtime fetch behaviour
+        # does not change until Deliverable 5 step 4 wires planned_queries
+        # into pipeline.py.
+        query_plan = build_planned_queries(
+            capabilities=entry.capabilities,
+            candidate_profile=candidate_profile,
+            search_profile=search_profile,
+            execution_limits=execution_limits,
+        )
+        estimated_request_count = (
+            len(supported)
+            * len(query_plan.planned_queries)
+            * execution_limits.max_pages_per_source_country
+        )
+
         search_params = SourceSearchParams(
             countries=supported,
             keywords=list(candidate_profile.title_aliases),
@@ -368,6 +387,7 @@ def build_plan(
             f"score={score_map[entry.source_id]:.3f}",
             f"covers {len(supported)}/{len(selected_countries)} requested countries",
             decision.reason,
+            *query_plan.notes,
         ]
 
         region_coverage = sorted({region for c in supported for region in resolve_regions(c)})
@@ -381,7 +401,20 @@ def build_plan(
                 access_mode=entry.access_mode,
                 approval_status=entry.approval_status,
                 search_params=search_params,
+                # `search_queries` stays the M1/1.1 legacy representation
+                # (candidate-history word list) through this step, not yet
+                # re-rendered from `planned_queries` — MILESTONE_2.md's
+                # "Domain-model changes" note about eventually populating it
+                # from PlannedQuery expressions is a post-Task-4 end state,
+                # not a Task 3 acceptance requirement (Deliverable 5 step 3's
+                # own file/acceptance list names only planned_queries/
+                # estimated_request_count). `planned_queries` is the
+                # authoritative M2 query representation; reconciling or
+                # retiring this field is Task 4's concern once execution
+                # actually moves onto planned_queries.
                 search_queries=list(candidate_profile.title_aliases),
+                planned_queries=query_plan.planned_queries,
+                estimated_request_count=estimated_request_count,
                 polling_frequency_minutes=entry.polling_frequency_minutes,
                 config_status=entry.config_status,
                 effective_config_status=_effective_config_status(entry, env),

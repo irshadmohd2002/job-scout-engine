@@ -1,5 +1,11 @@
 from job_scout import config
-from job_scout.models import AccessMode, ApprovalStatus, ConfigStatus, SourceType
+from job_scout.models import (
+    AccessMode,
+    ApprovalStatus,
+    ConfigStatus,
+    SourceCapabilities,
+    SourceType,
+)
 from job_scout.source_intelligence.planner import build_plan
 from tests.factories import make_candidate_profile, make_search_profile, make_source_entry
 
@@ -73,11 +79,16 @@ def test_selected_and_excluded_sources_with_reasons() -> None:
     assert "no_geographic_coverage" in excluded.reasons_excluded
 
 
-def test_build_plan_generates_no_planned_queries_yet() -> None:
-    """Milestone 2 Deliverable 5 step 2 non-goal: the domain model can carry
-    PlannedQuery objects (test_query_plan_models.py), but build_plan() itself
-    has no query-planner wiring yet (that's step 3) — every SelectedSource
-    it produces keeps the M1/1.1 single-query representation unchanged."""
+def test_build_plan_populates_planned_queries_via_candidate_fallback() -> None:
+    """Milestone 2 Deliverable 5 step 3: build_plan() now wires the
+    SearchProfile-driven query planner. A SearchProfile with no
+    target_titles/title_aliases/role_families/required_skills carries no
+    active query intent at all, so the single grouped fallback query falls
+    back to CandidateProfile data — same "one broad query" shape M1/1.1
+    always had, now represented as a PlannedQuery instead of being implicit.
+    The legacy `search_params`/`search_queries` representation
+    (`AdzunaAdapter.fetch()`'s actual runtime input) stays byte-for-byte
+    unchanged — no pipeline/runtime behaviour changes in this step."""
     candidate = make_candidate_profile(title_aliases=["Strategy Manager"])
     search = make_search_profile(included_countries=["GB"])
     adzuna = _adzuna_entry(
@@ -88,12 +99,45 @@ def test_build_plan_generates_no_planned_queries_yet() -> None:
     plan = build_plan(candidate, search, [adzuna], _limits(), _weights())
 
     selected = next(s for s in plan.selected_sources if s.source_id == "adzuna_api")
-    assert selected.planned_queries == []
-    assert selected.estimated_request_count == 0
-    # M1/1.1 behaviour, byte-for-byte unchanged: exactly one broad OR query.
+    assert len(selected.planned_queries) == 1
+    fallback = selected.planned_queries[0]
+    assert fallback.mode == "any_of_words"
+    assert fallback.provenance == ["candidate.title_aliases", "candidate.role_families"]
+    # estimated_request_count = supported_countries * planned_queries * max_pages
+    assert selected.estimated_request_count == 1 * 1 * 3
+    # M1/1.1 runtime representation, byte-for-byte unchanged: exactly one
+    # broad OR query, still driven by CandidateProfile.title_aliases alone —
+    # pipeline.py's fetch() call pattern does not change until step 4.
     assert selected.search_queries == ["Strategy Manager"]
     assert selected.search_params is not None
     assert selected.search_params.keywords == ["Strategy Manager"]
+
+
+def test_build_plan_prefers_target_titles_over_candidate_history() -> None:
+    """The active SearchProfile's target_titles must dominate — candidate
+    history never contributes once the search profile expresses real
+    intent."""
+    candidate = make_candidate_profile(
+        title_aliases=["Should Not Appear"], role_families=["should_not_appear"]
+    )
+    search = make_search_profile(
+        included_countries=["GB"], target_titles=["Chief of Staff", "Transformation Lead"]
+    )
+    adzuna = _adzuna_entry(
+        geographic_coverage=["GB"],
+        approval_status=ApprovalStatus.APPROVED,
+        config_status=ConfigStatus.CONFIGURED,
+    )
+    plan = build_plan(candidate, search, [adzuna], _limits(), _weights())
+    selected = next(s for s in plan.selected_sources if s.source_id == "adzuna_api")
+    labels = [q.label for q in selected.planned_queries]
+    assert labels == ["Chief of Staff", "Transformation Lead"]
+    assert all(q.mode == "exact_phrase" for q in selected.planned_queries)
+    for query in selected.planned_queries:
+        assert "Should Not Appear" not in query.keywords
+    # Legacy search_params still unaffected by any of this (unchanged runtime input).
+    assert selected.search_params is not None
+    assert selected.search_params.keywords == ["Should Not Appear"]
 
 
 def test_source_selected_but_not_executable_when_manual_review() -> None:
@@ -120,8 +164,6 @@ def test_manual_review_source_with_full_capabilities_still_not_executable() -> N
     (however permissive) must never make a manual_review/blocked source
     executable — only the compliance gate's approval_status/access_mode
     truth table decides that."""
-    from job_scout.models import SourceCapabilities
-
     candidate = make_candidate_profile()
     search = make_search_profile(included_countries=["GB"])
     entry = make_source_entry(
@@ -373,3 +415,87 @@ def test_effective_config_status_unaffected_for_sources_without_a_credential_rul
     plan = build_plan(candidate, search, [entry], _limits(), _weights(), env=env)
     selected = plan.selected_sources[0]
     assert selected.effective_config_status == ConfigStatus.NEEDS_SETUP
+
+
+# --- Milestone 2 Deliverable 5 step 3: query-planner wiring (build_plan level) ---
+
+
+def test_estimated_request_count_matches_countries_times_queries_times_pages() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(
+        included_countries=["GB", "DE"], target_titles=["Role A", "Role B"]
+    )
+    adzuna = _adzuna_entry(
+        geographic_coverage=["GB", "DE"],
+        approval_status=ApprovalStatus.APPROVED,
+        config_status=ConfigStatus.CONFIGURED,
+    )
+    limits = _limits(max_pages_per_source_country=3, max_queries_per_source_country=5)
+    plan = build_plan(candidate, search, [adzuna], limits, _weights())
+    selected = plan.selected_sources[0]
+    assert selected.supported_countries == ["GB", "DE"]
+    assert len(selected.planned_queries) == 2
+    # 2 countries * 2 planned queries * 3 max_pages_per_source_country
+    assert selected.estimated_request_count == 2 * 2 * 3
+
+
+def test_estimated_request_count_reflects_query_budget_truncation() -> None:
+    candidate = make_candidate_profile()
+    search = make_search_profile(
+        included_countries=["GB"], target_titles=["Role A", "Role B", "Role C"]
+    )
+    adzuna = _adzuna_entry(
+        geographic_coverage=["GB"],
+        approval_status=ApprovalStatus.APPROVED,
+        config_status=ConfigStatus.CONFIGURED,
+    )
+    limits = _limits(max_pages_per_source_country=2, max_queries_per_source_country=1)
+    plan = build_plan(candidate, search, [adzuna], limits, _weights())
+    selected = plan.selected_sources[0]
+    assert len(selected.planned_queries) == 1
+    assert selected.estimated_request_count == 1 * 1 * 2
+    assert any("query_budget" in reason for reason in selected.reasons_selected)
+
+
+def test_company_filter_source_has_no_planned_queries_via_build_plan() -> None:
+    """decisions.md D-041: a Greenhouse/Lever-shaped source (company_filter)
+    relies on watchlist fan-out, not keyword PlannedQuerys."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"], target_titles=["Role A"])
+    ats_feed = make_source_entry(
+        source_id="greenhouse_public_feeds",
+        access_mode=AccessMode.PUBLIC_ATS_FEED,
+        approval_status=ApprovalStatus.MANUAL_REVIEW,
+        geographic_coverage=["GB"],
+        role_coverage=["general"],
+        capabilities=SourceCapabilities(company_filter=True, keyword_search=False),
+    )
+    plan = build_plan(candidate, search, [ats_feed], _limits(), _weights())
+    selected = plan.selected_sources[0]
+    assert selected.planned_queries == []
+    assert selected.estimated_request_count == 0
+
+
+def test_source_selection_and_compliance_decisions_unaffected_by_query_planner() -> None:
+    """Query-planner wiring must not change source selection, scoring, or
+    compliance decisions — only planned_queries/estimated_request_count."""
+    candidate = make_candidate_profile()
+    search = make_search_profile(
+        included_countries=["GB"], target_titles=["Role A", "Role B"]
+    )
+    entry = make_source_entry(
+        source_id="pending_source",
+        access_mode=AccessMode.PERMITTED_HTML,
+        approval_status=ApprovalStatus.MANUAL_REVIEW,
+        geographic_coverage=["GB"],
+        role_coverage=["general"],
+        config_status=ConfigStatus.NOT_CONFIGURED,
+        required_setup_actions=["Confirm terms"],
+    )
+    plan = build_plan(candidate, search, [entry], _limits(), _weights())
+    selected = plan.selected_sources[0]
+    # still not executable — compliance gate unaffected by having planned_queries
+    assert selected.executable is False
+    assert selected.required_setup_actions == ["Confirm terms"]
+    # planning data is still generated even for a non-executable source
+    assert len(selected.planned_queries) == 2

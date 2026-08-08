@@ -245,6 +245,65 @@ def test_plan_shows_effective_needs_credentials_when_absent(
     assert "effective_config_status=needs_credentials" in result.output
 
 
+# --- Milestone 2 Deliverable 5 step 3: planned_queries/estimated_request_count ---
+
+
+def test_plan_human_output_shows_planned_queries_and_estimate(tmp_path: Path) -> None:
+    candidate, search, registry, env = _write_config(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "plan",
+            "--profile",
+            "strategy-global",
+            "--candidate-profile",
+            str(candidate),
+            "--search-profiles",
+            str(search),
+            "--source-registry",
+            str(registry),
+            "--env-file",
+            str(env),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "planned_queries (1), estimated_request_count=" in result.output
+    # Search profile has no target_titles -> falls back to CandidateProfile
+    # title_aliases ("Strategy Manager"), same as M1/1.1's single query.
+    assert "Strategy Manager" in result.output
+    assert "any_of_words" in result.output
+
+
+def test_plan_json_output_includes_planned_queries(tmp_path: Path) -> None:
+    candidate, search, registry, env = _write_config(tmp_path)
+    result = runner.invoke(
+        app,
+        [
+            "plan",
+            "--profile",
+            "strategy-global",
+            "--candidate-profile",
+            str(candidate),
+            "--search-profiles",
+            str(search),
+            "--source-registry",
+            str(registry),
+            "--env-file",
+            str(env),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    import json
+
+    data = json.loads(result.output)
+    selected = data["selected_sources"][0]
+    assert len(selected["planned_queries"]) == 1
+    expected_keywords = ["Strategy Manager", "strategy and planning"]
+    assert selected["planned_queries"][0]["keywords"] == expected_keywords
+    assert selected["estimated_request_count"] > 0
+
+
 def test_plan_json_output_includes_effective_config_status(tmp_path: Path) -> None:
     candidate, search, registry, env = _write_config(
         tmp_path, env_text="ADZUNA_APP_ID=id\nADZUNA_APP_KEY=key\n"

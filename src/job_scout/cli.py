@@ -209,6 +209,15 @@ def _format_plan_human(plan: SearchExecutionPlan) -> str:
         if source.required_setup_actions:
             lines.append(f"      required_setup_actions={source.required_setup_actions}")
         lines.append(f"      reasons={source.reasons_selected}")
+        lines.append(
+            f"      planned_queries ({len(source.planned_queries)}), "
+            f"estimated_request_count={source.estimated_request_count}:"
+        )
+        for query in source.planned_queries:
+            lines.append(
+                f"        - [{query.mode}] {query.label}: keywords={query.keywords}  "
+                f"provenance={query.provenance}"
+            )
     lines.append("")
     lines.append(f"Excluded sources ({len(plan.excluded_sources)}):")
     if not plan.excluded_sources:
