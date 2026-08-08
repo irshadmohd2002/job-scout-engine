@@ -1499,3 +1499,121 @@ ambiguity between `MILESTONE_2.md`'s "In scope" prose and its own
 acceptance criteria, which — if left inconsistent — would have let an
 implementation pass legitimately claim done-ness after building only two
 adapters.
+
+### D-045: Milestone 2 Deliverable 5 step 4 (planned-query execution) —
+fail-fast per source on a query failure; zero-planned-queries sources
+produce no `SourceRun`; `search_queries` reconciled; `PlannedQuery.mode`
+threaded to the Adzuna adapter boundary via a new, source-agnostic
+`SourceSearchParams.keyword_mode` field
+**Decision**: `pipeline.py::run_once` now calls `adapter.fetch()` once per
+`SelectedSource.planned_queries` entry (architecture.md §17), resolving
+several execution-semantics questions `MILESTONE_2.md`'s Deliverable 5 step 4
+description left implicit:
+1. **Failure handling is fail-fast per source, not best-effort-continue.** If
+   one planned query's `fetch()` raises a `SourceAdapterError`, the remaining
+   planned queries for that source are not attempted; data already returned
+   by earlier, successful queries in the same run is kept. This mirrors
+   `AdzunaAdapter.fetch()`'s own existing internal behaviour (one country's
+   failure already aborts the rest of that call, §3) rather than inventing a
+   new "keep trying after an error" policy the task explicitly discouraged
+   ("do not invent a complex retry framework"). If a source's queries produce
+   zero raw records and at least one error, the run is `FAILED` with zero
+   jobs — byte-identical to the pre-M2 single-query failure outcome, so `N=1`
+   planned query reduces exactly to prior behaviour. If at least one query
+   succeeded before a later one failed, the run is `PARTIAL`, reusing the
+   existing `PARTIAL if (hit_cap or run.errors) else SUCCESS` status logic
+   unchanged.
+2. **A source with zero planned queries produces no `SourceRun` row at all**,
+   mirroring the pre-existing `not selected.executable: continue` skip
+   (`pipeline.py`) rather than logging an empty/vacuous run. Chosen as the
+   closer precedent already established in the same function, over inventing
+   a new "ran but had nothing to search for" run state this task's own scope
+   didn't ask for.
+3. **`SelectedSource.search_queries` is now rendered from `planned_queries`**
+   (one string per query — the phrase for `exact_phrase`, an `" OR "`-joined
+   list for `any_of_words`), replacing the M1/1.1
+   `candidate_profile.title_aliases` list `source_intelligence/planner.py`
+   populated it with through step 3. `planner.py`'s own step-3 comment
+   ("reconciling or retiring this field is Task 4's concern") assigned this
+   to step 4; `MILESTONE_2.md`'s Deliverable 5 step 4 file list names only
+   `pipeline.py`, but leaving `search_queries` stale would violate this
+   task's own explicit "no field may misleadingly claim a different search
+   was executed" instruction and the acceptance criterion that `job-scout
+   plan`'s displayed queries match what `run-once` actually executes. This
+   is a one-line, additive rendering change in `planner.py` — no query
+   generation logic (step 3, untouched) or `AdzunaAdapter` code moved.
+   `SourceSearchParams.keywords` on `SelectedSource.search_params` is left
+   as-is (still `candidate_profile.title_aliases`), now documented in a code
+   comment as a legacy template value for the *non-keyword* fields only
+   (`countries`/`employment_types`/paging) — `run_once` overrides `.keywords`
+   per query via `model_copy`, so the stale value is never actually sent to
+   an adapter.
+4. **`PlannedQuery.mode` now reaches the Adzuna adapter boundary, via a new,
+   source-agnostic `SourceSearchParams.keyword_mode` field, not an
+   Adzuna-specific one.** The original version of this step left
+   `AdzunaAdapter._build_query` unchanged (per `MILESTONE_2.md` Deliverable 5
+   step 4's literal "`AdzunaAdapter` itself is **not** modified"), which meant
+   `exact_phrase` and `any_of_words` queries silently rendered into the
+   identical Adzuna request (`what_or` in both cases) — a genuine semantic
+   mismatch between what `SourceCapabilities.exact_phrase_search=True` (D-041)
+   declares Adzuna supports and what the shipped adapter actually did. Fixed
+   as a follow-on correction, explicitly authorised by the user, with the
+   smallest typed change: `SourceSearchParams` gains `keyword_mode:
+   Literal["exact_phrase", "any_of_words"] = "any_of_words"` — the same two
+   values and meaning as `PlannedQuery.mode`, so the model stays a generic,
+   adapter-agnostic carrier of query intent (never `what`/`what_or` or any
+   other adapter-specific parameter name). `pipeline.py` copies
+   `query.mode -> keyword_mode` alongside `query.keywords -> keywords` in the
+   same `model_copy(update={...})` call already used for keywords — still a
+   plain field copy, no `if source_id == ...` branching anywhere in
+   `pipeline.py`. `AdzunaAdapter._build_query` gained one small,
+   `keyword_mode`-aware branch: `"any_of_words"` -> `what_or` (unchanged,
+   confirmed OR-of-words); `"exact_phrase"` -> `what`, Adzuna's stricter of
+   the two documented parameters — never both parameters on the same
+   request. Evidence gathered at implementation time
+   (`developer.adzuna.com/docs/search` and secondary sources) confirms `what`
+   and `what_or` are both real, documented parameters, and confirms
+   `what_or` is OR-of-words, but could **not** confirm that `what` guarantees
+   literal word-adjacency/quoted-phrase matching — Adzuna's own docs also
+   reference a separate `what_phrase` parameter, which would be the literal-
+   phrase option if a future task needs one. Per this project's evidence bar
+   (D-016/D-027/D-028/D-031), `what` is documented here as "stricter/
+   all-terms-required," not overclaimed as guaranteed phrase-adjacency; no
+   quote characters or other unverified quoting syntax are added to either
+   parameter's value. `SourceCapabilities.exact_phrase_search`'s meaning is
+   unchanged; the frozen `PlannedQuery.mode` name/values (Task 3) are
+   unchanged; no query-generation rule changed. The invariant this correction
+   establishes: the two modes no longer render into the same Adzuna request
+   for the same keywords (`test_exact_phrase_and_any_of_words_never_render_
+   identical_requests`, `tests/test_adzuna_adapter.py`).
+**Alternatives**: Continuing to attempt every planned query even after one
+fails (rejected — no precedent elsewhere in this codebase for "ignore an
+error and keep going" at the source-adapter boundary; the adapter's own
+per-country behaviour is fail-fast, and matching that is the smaller,
+more consistent change); logging a `SUCCESS`, zero-job `SourceRun` for a
+zero-planned-queries source instead of skipping it entirely (rejected —
+the `not executable` precedent in the same function already establishes
+"nothing happened, no row" as this codebase's convention); leaving
+`exact_phrase`/`any_of_words` collapsed to the same `what_or` request
+(rejected — the user explicitly authorised this follow-on correction rather
+than accepting the mismatch, which is what this final version of D-045
+implements); mapping `exact_phrase` to the undocumented-in-depth
+`what_phrase` parameter instead of `what` (rejected — the task's own
+explicit "expected architectural intent" directs `exact_phrase -> what`, and
+`what_phrase`'s own semantics could be confirmed even less than `what`'s from
+available evidence; using it would trade one unverified claim for another,
+less-evidenced one); adding literal quote characters around multi-word
+`what` values to force phrase-adjacency (rejected — not confirmed as
+supported/required syntax by any source consulted, and the task explicitly
+forbids inventing unverified quoting syntax).
+**Why**: Each choice reuses an existing, already-established pattern in this
+codebase (fail-fast adapter behaviour, the `not executable` skip precedent,
+the `PARTIAL`/`FAILED` status logic, `model_copy`-based field substitution
+already used for `keywords`) rather than inventing new policy, per this
+project's "smallest behaviour consistent with existing error handling"/
+"smallest typed change" instructions; the `keyword_mode` field keeps the
+adapter-boundary rule (`architecture.md` §3: pipeline code stays
+adapter-agnostic, translation happens inside the adapter) intact while
+finally giving `exact_phrase`/`any_of_words` distinguishable real requests,
+and the `what` semantics claim is calibrated to exactly what the available
+evidence supports, consistent with this project's established evidence bar.

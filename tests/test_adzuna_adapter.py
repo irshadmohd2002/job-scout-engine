@@ -182,6 +182,71 @@ def test_required_query_parameter_names_are_sent() -> None:
 
 
 @respx.mock
+def test_legacy_default_keyword_mode_uses_what_or() -> None:
+    """`_params()` never sets `keyword_mode` — SourceSearchParams' default
+    ("any_of_words") must reproduce the exact pre-M2 request shape so every
+    caller that predates PlannedQuery keeps working unchanged."""
+    route = respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+    adapter.fetch(_params(keywords=["Strategy Manager"], max_pages=1))
+    sent = route.calls.last.request.url.params
+    assert sent["what_or"] == "Strategy Manager"
+    assert "what" not in sent
+
+
+@respx.mock
+def test_any_of_words_keyword_mode_uses_what_or() -> None:
+    route = respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+    adapter.fetch(
+        _params(
+            keywords=["Strategy Manager", "Transformation Lead"],
+            keyword_mode="any_of_words",
+            max_pages=1,
+        )
+    )
+    sent = route.calls.last.request.url.params
+    assert sent["what_or"] == "Strategy Manager Transformation Lead"
+    assert "what" not in sent
+
+
+@respx.mock
+def test_exact_phrase_keyword_mode_uses_what_not_what_or() -> None:
+    route = respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+    adapter.fetch(_params(keywords=["Chief of Staff"], keyword_mode="exact_phrase", max_pages=1))
+    sent = route.calls.last.request.url.params
+    assert sent["what"] == "Chief of Staff"
+    assert "what_or" not in sent
+
+
+@respx.mock
+def test_exact_phrase_and_any_of_words_never_render_identical_requests() -> None:
+    """The invariant this correction exists to establish: the two modes must
+    no longer silently produce the exact same Adzuna request."""
+    route = respx.get(f"{BASE_URL}/jobs/gb/search/1").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    adapter = AdzunaAdapter(app_id="id", app_key="key")
+
+    adapter.fetch(_params(keywords=["Chief of Staff"], keyword_mode="exact_phrase", max_pages=1))
+    exact_params = dict(route.calls.last.request.url.params)
+
+    adapter.fetch(_params(keywords=["Chief of Staff"], keyword_mode="any_of_words", max_pages=1))
+    or_params = dict(route.calls.last.request.url.params)
+
+    assert exact_params != or_params
+    assert "what" in exact_params and "what_or" not in exact_params
+    assert "what_or" in or_params and "what" not in or_params
+
+
+@respx.mock
 def test_http_404_raises_source_not_found_error_with_diagnostic_context() -> None:
     respx.get(f"{BASE_URL}/jobs/ie/search/1").mock(return_value=httpx.Response(404))
     adapter = AdzunaAdapter(app_id="id", app_key="key")

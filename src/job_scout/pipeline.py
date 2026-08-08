@@ -7,6 +7,14 @@ notification/external-write actions (there are none in M1 — see
 MILESTONE_1.md "Explicitly out of scope") — everything else in this module
 runs identically regardless of dry_run; see "Dry-run semantics" in
 architecture.md section 11.
+
+Milestone 2 Deliverable 5 step 4: for each executable selected source,
+`adapter.fetch()` is called once per `SelectedSource.planned_queries` entry
+(the query planner's bounded, `SearchProfile`-driven output — step 3),
+instead of once per source. `AdzunaAdapter` itself is unmodified; only the
+call cardinality and which `SourceSearchParams.keywords` each call carries
+changes. Raw records from every query are aggregated before
+normalisation/dedup, which is otherwise unchanged.
 """
 
 from __future__ import annotations
@@ -202,6 +210,15 @@ def run_once(
     for selected in plan.selected_sources:
         if not selected.executable:
             continue
+        if not selected.planned_queries:
+            # M2 Task 4: the query planner (step 3) already decided this
+            # source has no query intent to execute (an empty
+            # SearchProfile/CandidateProfile, or a capability like
+            # company_filter=True/keyword_search=False) — never fall back to
+            # an unplanned query built from candidate_profile.title_aliases
+            # directly. Mirrors the `not executable` skip immediately above:
+            # nothing ran for this source, so no SourceRun record is produced.
+            continue
 
         entry = registry_by_id.get(selected.source_id)
         if entry is None:
@@ -241,17 +258,47 @@ def run_once(
             continue
 
         normalizer = _NORMALIZERS.get(selected.source_id)
-        if normalizer is None or selected.search_params is None:
+        search_params_template = selected.search_params
+        if normalizer is None or search_params_template is None:
             run.errors.append(f"No normaliser implemented for source_id '{selected.source_id}'.")
             run.completed_at = datetime.now(UTC)
             source_runs.append(run)
             repository.save_source_run(run)
             continue
 
-        try:
-            raw_records = adapter.fetch(selected.search_params)
-        except SourceAdapterError as exc:
-            run.errors.append(str(exc))
+        # One adapter.fetch() call per PlannedQuery, in the planner's
+        # deterministic order; each call reuses the same non-keyword
+        # SourceSearchParams (countries/employment_types/paging — already
+        # narrowed to this source's supported countries) and only swaps in
+        # that query's own keywords/mode. `PlannedQuery.mode` and
+        # `SourceSearchParams.keyword_mode` share the same source-agnostic
+        # Literal values by design (models.py) — this is a plain field copy,
+        # never an if/elif on source_id; the adapter alone decides what a
+        # given mode means as an actual request parameter. Country iteration
+        # and per-country pagination stay entirely inside the (unmodified)
+        # adapter.
+        raw_records: list[RawJobRecord] = []
+        for query in selected.planned_queries:
+            query_params = search_params_template.model_copy(
+                update={"keywords": query.keywords, "keyword_mode": query.mode}
+            )
+            try:
+                raw_records.extend(adapter.fetch(query_params))
+            except SourceAdapterError as exc:
+                run.errors.append(str(exc))
+                # Fail-fast per source: stop attempting the remaining planned
+                # queries, consistent with the adapter's own existing
+                # per-country fail-fast behaviour inside a single fetch()
+                # call (one country's failure already aborts the rest of
+                # that call — see AdzunaAdapter.fetch()). Records already
+                # gathered from earlier, successful queries in this run are
+                # kept, not discarded.
+                break
+
+        if not raw_records and run.errors:
+            # Every attempted query failed (or the first one did, before any
+            # data came back) — same "isolated FAILED run, zero jobs" outcome
+            # a single-query source has always had on a fetch error.
             run.completed_at = datetime.now(UTC)
             source_runs.append(run)
             repository.save_source_run(run)

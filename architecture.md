@@ -1145,3 +1145,90 @@ display), and the cross-source dedup tiers (`canonical_application_url`
 gating) have a typed source to read from once those specific pieces of work
 land (Milestone 2 Deliverable 5, later steps) — see `MILESTONE_2.md` for the
 full consumption design.
+
+## 17. Milestone 2 Deliverable 5 step 4: planned-query execution (implemented)
+
+`pipeline.py::run_once` now calls `adapter.fetch()` once per
+`SelectedSource.planned_queries` entry (§2.10, populated by step 3's query
+planner), instead of once per source. For each executable, non-empty-plan
+selected source:
+
+- `SourceSearchParams` is built once as a template (unchanged fields:
+  `countries` — already narrowed to the source's `supported_countries` —
+  `role_family_hints`, `employment_types`, `min/max_experience_years`,
+  `page_size`, `max_pages`), then `model_copy(update={"keywords": ...,
+  "keyword_mode": ...})` substitutes each `PlannedQuery.keywords`/`.mode` in
+  turn. `keyword_mode` (§3, new field) is a plain, source-agnostic field
+  copy — the pipeline never branches on `source_id` or knows any adapter's
+  actual request-parameter names. `AdzunaAdapter.fetch()`'s Protocol
+  signature and internal per-country pagination/fail-fast behaviour are
+  exactly as before — only the pipeline's call cardinality and the
+  `keywords`/`keyword_mode` each call carries changed; `AdzunaAdapter
+  ._build_query` gained a small, mode-aware branch (see below) to translate
+  that generic intent into Adzuna's actual request parameters.
+- Raw records from every query for a source are aggregated into one list
+  before normalisation/dedup/scoring, which are otherwise unchanged — the
+  existing fingerprint/cross-source-duplicate checks already handle
+  duplicate raw observations returned by two overlapping planned queries
+  (e.g. "Strategy Manager" and "Corporate Strategy" both matching the same
+  vacancy) the same way they handle a repeat fetch across separate runs: one
+  canonical `Job` row, provenance merged, `SourceRun.jobs_duplicate`
+  incremented. `SourceRun.jobs_fetched` counts raw observations (pre-dedup),
+  matching its existing single-query-era meaning.
+- A source with zero `planned_queries` (an empty `SearchProfile`/
+  `CandidateProfile`, or a capability like `company_filter=True`/
+  `keyword_search=False` that the planner already turns into zero queries) is
+  never executed and produces no `SourceRun` row at all — mirrors the
+  existing `executable=False` skip. There is no fallback to
+  `CandidateProfile.title_aliases` once `planned_queries` exists.
+- If a query's `adapter.fetch()` call raises a `SourceAdapterError`, the
+  source stops attempting its remaining planned queries (fail-fast,
+  consistent with the adapter's own existing per-country fail-fast behaviour
+  inside one `fetch()` call) but keeps whatever raw records earlier queries
+  in the same run already returned. If no query for that source produced any
+  data, the run is `FAILED` with zero jobs (identical to the pre-M2
+  single-query failure outcome); otherwise it is `PARTIAL`, same as the
+  existing `hit_cap`-driven `PARTIAL` case.
+- `SelectedSource.search_queries` (§2.10) is now rendered from
+  `planned_queries` (one string per `PlannedQuery` — the phrase itself for
+  `exact_phrase`, an `" OR "`-joined list for `any_of_words`) instead of the
+  M1/1.1 `candidate_profile.title_aliases` list, so it never displays a
+  different search than the one `planned_queries`/execution actually use.
+  `SourceSearchParams.keywords` on `SelectedSource.search_params` stays the
+  legacy per-source template value (still `candidate_profile.title_aliases`)
+  — no longer what execution actually sends, since `run_once` overrides it
+  per query; kept only for the template's other fields (see above) and
+  general backward-compatible shape.
+
+### `SourceSearchParams.keyword_mode` (§3, new field; decisions.md D-045)
+
+`SourceSearchParams` gained one new field, `keyword_mode: Literal
+["exact_phrase", "any_of_words"] = "any_of_words"` — the same two literal
+values and meaning as `PlannedQuery.mode` (§2.10), so the model stays a
+plain, adapter-agnostic carrier of query *intent* (never a source-specific
+parameter name). Defaults to `"any_of_words"` so every call site that
+predates this field — legacy tests, the per-source template
+`source_intelligence/planner.py::build_plan` still constructs — keeps its
+pre-M2 OR-query behaviour unchanged without needing to set it explicitly.
+
+`AdzunaAdapter._build_query` (the one, narrowly-scoped adapter change this
+correction makes) branches on `keyword_mode` to pick which of Adzuna's two
+real, documented query parameters a request uses — never both on the same
+request, and never a fabricated quoting syntax:
+- `keyword_mode="any_of_words"` -> `what_or` (confirmed OR-of-individual-
+  words — the M1/1.1 behaviour, byte-for-byte unchanged).
+- `keyword_mode="exact_phrase"` -> `what` — Adzuna's stricter of the two
+  documented parameters. Evidence available at implementation time
+  (`developer.adzuna.com/docs/search`, plus secondary sources) confirms
+  `what` and `what_or` are both real parameters and that `what_or` is
+  OR-of-words, but does **not** confirm that `what` guarantees literal
+  word-adjacency/quoted-phrase matching — a separate `what_phrase` parameter
+  also appears in Adzuna's own documentation, which would be the literal-
+  phrase option if one is ever needed. Documented here, per this project's
+  evidence bar (decisions.md D-016/D-027/D-028/D-031), as "stricter/
+  all-terms-required," not overclaimed as guaranteed phrase-adjacency.
+
+The invariant this correction establishes: `exact_phrase` and `any_of_words`
+queries for the same keywords no longer render into an identical Adzuna
+request (`test_exact_phrase_and_any_of_words_never_render_identical_requests`,
+`tests/test_adzuna_adapter.py`).

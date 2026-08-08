@@ -18,6 +18,7 @@ from job_scout.models import (
     ConfigStatus,
     CountryExclusion,
     ExcludedSource,
+    PlannedQuery,
     SearchExecutionPlan,
     SearchProfile,
     SelectedSource,
@@ -285,6 +286,19 @@ def _apply_diversity_rule(
     return survivors, excluded
 
 
+def _render_query_expression(query: PlannedQuery) -> str:
+    """Human-readable rendering of one `PlannedQuery`, for the legacy
+    `SelectedSource.search_queries: list[str]` field (Milestone 2
+    Deliverable 5 step 4 — reconciling the M1/1.1 representation now that
+    `planned_queries` is what execution actually consumes). `exact_phrase`
+    queries only ever carry one keyword (the phrase itself); `any_of_words`
+    queries may carry several, rendered with an explicit `OR` so the display
+    doesn't imply an exact-phrase match it isn't."""
+    if query.mode == "exact_phrase":
+        return " ".join(query.keywords)
+    return " OR ".join(query.keywords)
+
+
 def build_plan(
     candidate_profile: CandidateProfile,
     search_profile: SearchProfile,
@@ -355,11 +369,7 @@ def build_plan(
         decision = authorize(entry, entry.access_mode)
 
         # Milestone 2 Deliverable 5 step 3: SearchProfile-driven PlannedQuery
-        # generation, planning data only. `search_params` below (the M1/1.1
-        # single-broad-query representation `AdzunaAdapter.fetch()` actually
-        # reads) is left byte-for-byte unchanged so runtime fetch behaviour
-        # does not change until Deliverable 5 step 4 wires planned_queries
-        # into pipeline.py.
+        # generation.
         query_plan = build_planned_queries(
             capabilities=entry.capabilities,
             candidate_profile=candidate_profile,
@@ -372,6 +382,16 @@ def build_plan(
             * execution_limits.max_pages_per_source_country
         )
 
+        # Milestone 2 Deliverable 5 step 4: `keywords`/`keyword_mode` here are
+        # template values only — `pipeline.py::run_once` overrides both per
+        # `PlannedQuery` before each `adapter.fetch()` call (keywords ->
+        # query.keywords, keyword_mode -> query.mode), so this no longer
+        # drives actual retrieval. `keyword_mode` is left at its default
+        # ("any_of_words") deliberately. The other fields
+        # (countries/employment_types/paging, already narrowed to this
+        # source's supported countries) are the part of `SourceSearchParams`
+        # execution actually reuses unchanged across every planned query for
+        # this source.
         search_params = SourceSearchParams(
             countries=supported,
             keywords=list(candidate_profile.title_aliases),
@@ -401,18 +421,13 @@ def build_plan(
                 access_mode=entry.access_mode,
                 approval_status=entry.approval_status,
                 search_params=search_params,
-                # `search_queries` stays the M1/1.1 legacy representation
-                # (candidate-history word list) through this step, not yet
-                # re-rendered from `planned_queries` — MILESTONE_2.md's
-                # "Domain-model changes" note about eventually populating it
-                # from PlannedQuery expressions is a post-Task-4 end state,
-                # not a Task 3 acceptance requirement (Deliverable 5 step 3's
-                # own file/acceptance list names only planned_queries/
-                # estimated_request_count). `planned_queries` is the
-                # authoritative M2 query representation; reconciling or
-                # retiring this field is Task 4's concern once execution
-                # actually moves onto planned_queries.
-                search_queries=list(candidate_profile.title_aliases),
+                # Milestone 2 Deliverable 5 step 4: `search_queries` is now
+                # rendered from `planned_queries` — the same expressions
+                # `job-scout plan` shows and `pipeline.py` actually executes —
+                # rather than the M1/1.1 candidate-history word list, so this
+                # field never claims a different search ran than the one that
+                # did (MILESTONE_2.md "Domain-model changes").
+                search_queries=[_render_query_expression(q) for q in query_plan.planned_queries],
                 planned_queries=query_plan.planned_queries,
                 estimated_request_count=estimated_request_count,
                 polling_frequency_minutes=entry.polling_frequency_minutes,

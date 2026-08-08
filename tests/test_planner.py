@@ -80,15 +80,16 @@ def test_selected_and_excluded_sources_with_reasons() -> None:
 
 
 def test_build_plan_populates_planned_queries_via_candidate_fallback() -> None:
-    """Milestone 2 Deliverable 5 step 3: build_plan() now wires the
+    """Milestone 2 Deliverable 5 step 3/4: build_plan() wires the
     SearchProfile-driven query planner. A SearchProfile with no
     target_titles/title_aliases/role_families/required_skills carries no
     active query intent at all, so the single grouped fallback query falls
     back to CandidateProfile data — same "one broad query" shape M1/1.1
     always had, now represented as a PlannedQuery instead of being implicit.
-    The legacy `search_params`/`search_queries` representation
-    (`AdzunaAdapter.fetch()`'s actual runtime input) stays byte-for-byte
-    unchanged — no pipeline/runtime behaviour changes in this step."""
+    `search_queries` (step 4) is now rendered from that same PlannedQuery,
+    not the raw candidate title_aliases list; `search_params.keywords` stays
+    the byte-for-byte legacy template value (pipeline.py overrides it per
+    query at execution time — see planner.py's own comment)."""
     candidate = make_candidate_profile(title_aliases=["Strategy Manager"])
     search = make_search_profile(included_countries=["GB"])
     adzuna = _adzuna_entry(
@@ -105,10 +106,9 @@ def test_build_plan_populates_planned_queries_via_candidate_fallback() -> None:
     assert fallback.provenance == ["candidate.title_aliases", "candidate.role_families"]
     # estimated_request_count = supported_countries * planned_queries * max_pages
     assert selected.estimated_request_count == 1 * 1 * 3
-    # M1/1.1 runtime representation, byte-for-byte unchanged: exactly one
-    # broad OR query, still driven by CandidateProfile.title_aliases alone —
-    # pipeline.py's fetch() call pattern does not change until step 4.
-    assert selected.search_queries == ["Strategy Manager"]
+    # search_queries is now the rendered PlannedQuery expression (step 4),
+    # not the raw candidate_profile.title_aliases list.
+    assert selected.search_queries == [" OR ".join(fallback.keywords)]
     assert selected.search_params is not None
     assert selected.search_params.keywords == ["Strategy Manager"]
 

@@ -389,6 +389,17 @@ class SourceRegistryEntry(BaseModel):
 class SourceSearchParams(BaseModel):
     countries: list[str]
     keywords: list[str]
+    # Milestone 2 Deliverable 5 step 4 correction: how `keywords` should be
+    # interpreted, source-agnostic — mirrors `PlannedQuery.mode` (same two
+    # literal values, same meaning: "any_of_words" is a broad OR-of-terms
+    # query, "exact_phrase" asks for the source's stricter/more precise
+    # match). This model stays adapter-agnostic; it carries intent, never a
+    # source-specific parameter name (`what`/`what_or` and their equivalents
+    # for any future adapter live only inside that adapter's own module).
+    # Defaults to "any_of_words" so every pre-existing call site that never
+    # set this — legacy tests, `source_intelligence/planner.py`'s per-source
+    # template — keeps its pre-M2 OR-query behaviour unchanged.
+    keyword_mode: Literal["exact_phrase", "any_of_words"] = "any_of_words"
     role_family_hints: list[str]
     employment_types: list[str]
     min_experience_years: float | None

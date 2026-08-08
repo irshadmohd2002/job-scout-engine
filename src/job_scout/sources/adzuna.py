@@ -87,12 +87,28 @@ class AdzunaAdapter:
             "content-type": "application/json",
         }
         if params.keywords:
-            # Adzuna's `what` is an AND-phrase match; `what_or` OR-matches
-            # individual words, which better fits a broad list of
-            # title_aliases in Milestone 1's deterministic (non-semantic)
-            # matching — see architecture.md section 10, Stage 2/5 note on
-            # keyword-overlap proxies.
-            query["what_or"] = " ".join(params.keywords)
+            # Milestone 2 Deliverable 5 step 4 correction: `keyword_mode`
+            # (source-agnostic, set by the pipeline from PlannedQuery.mode)
+            # selects which of Adzuna's two documented query parameters this
+            # request uses — never both on the same request. Per Adzuna's own
+            # docs (developer.adzuna.com/docs/search, checked at
+            # implementation time): `what` and `what_or` are both real,
+            # documented parameters; `what_or` is confirmed OR-of-individual-
+            # words (the M1 behaviour this branch preserves for
+            # "any_of_words"). `what` is the stricter of the two — evidence
+            # available at implementation time could not confirm it
+            # guarantees literal word-adjacency/quoted-phrase matching (a
+            # separate `what_phrase` parameter also appears in Adzuna's docs,
+            # which would be the literal-phrase option if one is needed
+            # later); treat `what` here as "all supplied terms required" —
+            # stricter/AND-style, not proven to be phrase-adjacency — per
+            # this project's evidence bar (decisions.md D-016/D-027/D-028/
+            # D-031: don't overclaim an unverified API contract). No quote
+            # characters or other unverified quoting syntax are added.
+            if params.keyword_mode == "exact_phrase":
+                query["what"] = " ".join(params.keywords)
+            else:
+                query["what_or"] = " ".join(params.keywords)
         if "full_time" in params.employment_types:
             query["full_time"] = 1
         return query
