@@ -18,6 +18,34 @@
 # architecture.md section 15.7): industry_coverage, sector_coverage,
 # seniority_coverage. Shown explicitly on adzuna_api below; every other
 # entry relies on the default (unrestricted).
+#
+# Milestone 2 Deliverable 5 step 1 addition (decisions.md D-040/D-041):
+# `capabilities` — a typed SourceCapabilities block describing what a
+# source's adapter contract actually supports. Optional; omitting it
+# entirely (as every entry below except adzuna_api does) defaults to
+# Adzuna-equivalent capabilities, so this field never breaks an existing
+# registry file. Shown explicitly on adzuna_api here only to document its
+# verified adapter contract (decisions.md D-016/D-031) — the values below
+# are identical to SourceCapabilities' own defaults, not a behaviour
+# change.
+#
+# IMPORTANT — every OTHER entry below (greenhouse_public_feeds,
+# lever_public_postings, and every illustrative government/portal/email
+# example) has no explicit `capabilities` block and therefore inherits the
+# same Adzuna-shaped default via Pydantic's field default. This is a
+# deliberate, approved backward-compatibility choice (decisions.md D-041 —
+# "every existing registry entry ... keeps validating and behaving
+# unchanged"), NOT a verified capability claim for those sources: read it
+# as "unknown, inherited default," never as "confirmed to behave like
+# Adzuna." Nothing in Milestone 2 Task 1 reads `.capabilities` for
+# planning/execution yet, and every one of these entries is already
+# non-executable today regardless (manual_review/alert_only/
+# requires_authorisation/blocked), so this has no behavioural effect now.
+# Each real adapter gets its own explicit, verified `capabilities` block
+# when it's actually implemented (Milestone 2 Deliverable 5 steps 5/7/8) —
+# e.g. Greenhouse/Lever's real shape is `company_filter: true,
+# keyword_search: false`, the opposite of the inherited default shown
+# above for greenhouse_public_feeds/lever_public_postings today.
 
 sources:
   - source_id: adzuna_api
@@ -48,6 +76,32 @@ sources:
     reliability_score: 0.9
     historical_match_count: null
     duplicate_rate: null
+    # Verified against AdzunaAdapter's actual contract (decisions.md
+    # D-016/D-031): `what`/`what_or` support keyword + exact-phrase-ish
+    # queries, `where`/country-path support location/country filtering (no
+    # dedicated city parameter beyond free-text `where`, so city_filter
+    # stays true via the same mechanism), no industry/company/remote
+    # filter parameter, `salary_min`/`salary_max` present, description is a
+    # truncated snippet (not structured), `results_per_page`/page-looping
+    # supported, no posting-date filter parameter, stable `id` per
+    # listing, `redirect_url` is a real canonical application URL.
+    capabilities:
+      keyword_search: true
+      exact_phrase_search: true
+      location_filter: true
+      country_filter: true
+      city_filter: true
+      industry_filter: false
+      company_filter: false
+      remote_filter: false
+      salary_data: true
+      structured_description: false
+      pagination: true
+      page_size_control: true
+      posting_date_filter: false
+      stable_external_job_id: true
+      canonical_application_url: true
+      max_recommended_queries_per_request: null
 
   - source_id: greenhouse_public_feeds
     name: "Greenhouse public job-board JSON feeds"

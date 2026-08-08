@@ -92,6 +92,35 @@ def test_source_selected_but_not_executable_when_manual_review() -> None:
     assert selected.required_setup_actions == ["Confirm terms"]
 
 
+def test_manual_review_source_with_full_capabilities_still_not_executable() -> None:
+    """decisions.md D-041 step 1 non-goal: a declared `capabilities` block
+    (however permissive) must never make a manual_review/blocked source
+    executable — only the compliance gate's approval_status/access_mode
+    truth table decides that."""
+    from job_scout.models import SourceCapabilities
+
+    candidate = make_candidate_profile()
+    search = make_search_profile(included_countries=["GB"])
+    entry = make_source_entry(
+        source_id="capable_but_unreviewed",
+        access_mode=AccessMode.PUBLIC_ATS_FEED,
+        approval_status=ApprovalStatus.MANUAL_REVIEW,
+        geographic_coverage=["GB"],
+        role_coverage=["general"],
+        config_status=ConfigStatus.NOT_CONFIGURED,
+        capabilities=SourceCapabilities(
+            keyword_search=True,
+            exact_phrase_search=True,
+            company_filter=True,
+            industry_filter=True,
+            remote_filter=True,
+        ),
+    )
+    plan = build_plan(candidate, search, [entry], _limits(), _weights())
+    assert len(plan.selected_sources) == 1
+    assert plan.selected_sources[0].executable is False
+
+
 def test_partial_country_coverage_recorded_as_unsupported() -> None:
     candidate = make_candidate_profile()
     search = make_search_profile(included_countries=["GB", "DE", "AE"])

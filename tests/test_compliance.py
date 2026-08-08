@@ -1,6 +1,6 @@
 import pytest
 
-from job_scout.models import AccessMode, ApprovalStatus
+from job_scout.models import AccessMode, ApprovalStatus, SourceCapabilities
 from job_scout.source_intelligence.compliance import ComplianceConfigError, authorize
 from tests.factories import make_source_entry
 
@@ -63,3 +63,27 @@ def test_non_approved_statuses_never_executable(approval_status: ApprovalStatus)
     entry = make_source_entry(access_mode=AccessMode.PUBLIC_API, approval_status=approval_status)
     decision = authorize(entry, AccessMode.PUBLIC_API)
     assert decision.allowed is False
+
+
+def test_capabilities_never_affect_the_compliance_decision() -> None:
+    """decisions.md D-041 step 1 non-goal: capabilities are metadata only —
+    the compliance gate must reach the same decision regardless of what a
+    source's capabilities block declares."""
+    baseline = make_source_entry(
+        access_mode=AccessMode.PUBLIC_API, approval_status=ApprovalStatus.MANUAL_REVIEW
+    )
+    fully_capable = make_source_entry(
+        access_mode=AccessMode.PUBLIC_API,
+        approval_status=ApprovalStatus.MANUAL_REVIEW,
+        capabilities=SourceCapabilities(
+            keyword_search=True,
+            exact_phrase_search=True,
+            company_filter=True,
+            industry_filter=True,
+        ),
+    )
+    baseline_decision = authorize(baseline, AccessMode.PUBLIC_API)
+    capable_decision = authorize(fully_capable, AccessMode.PUBLIC_API)
+    assert baseline_decision.allowed is False
+    assert capable_decision.allowed is False
+    assert baseline_decision.reason == capable_decision.reason

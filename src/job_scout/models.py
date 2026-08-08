@@ -322,6 +322,36 @@ class Job(BaseModel):
 # --- 2.7 SourceRegistryEntry -------------------------------------------------
 
 
+class SourceCapabilities(BaseModel):
+    """What a source's own adapter contract actually supports (decisions.md
+    D-040/D-041; Milestone 2 Deliverable 5 step 1) — one typed object per
+    `SourceRegistryEntry`, not scattered top-level booleans, so the query
+    planner, `job-scout plan`/`job-scout sources`, and the cross-source dedup
+    tiers can ask what a source supports instead of assuming every source
+    behaves like Adzuna. Defaults reproduce Adzuna's own already-verified
+    contract (decisions.md D-016/D-031), so every existing registry entry —
+    which has no `capabilities` key today — keeps validating and behaving
+    unchanged. `authentication_required` is deliberately not a field here:
+    `SourceRegistryEntry.auth_required` already means exactly that."""
+
+    keyword_search: bool = True
+    exact_phrase_search: bool = True
+    location_filter: bool = True
+    country_filter: bool = True
+    city_filter: bool = True
+    industry_filter: bool = False
+    company_filter: bool = False
+    remote_filter: bool = False
+    salary_data: bool = True
+    structured_description: bool = False
+    pagination: bool = True
+    page_size_control: bool = True
+    posting_date_filter: bool = False
+    stable_external_job_id: bool = True
+    canonical_application_url: bool = True
+    max_recommended_queries_per_request: int | None = None
+
+
 class SourceRegistryEntry(BaseModel):
     source_id: str
     name: str
@@ -350,6 +380,7 @@ class SourceRegistryEntry(BaseModel):
     historical_match_count: int | None = None
     duplicate_rate: float | None = None
     last_successful_run: datetime | None = None
+    capabilities: SourceCapabilities = SourceCapabilities()
 
 
 # --- 3. Source-adapter contract models --------------------------------------

@@ -120,6 +120,113 @@ def test_load_source_registry(tmp_path: Path) -> None:
     assert entries[0].source_id == "adzuna_api"
 
 
+def test_load_source_registry_without_capabilities_block_defaults(tmp_path: Path) -> None:
+    """decisions.md D-041: an existing registry file with no `capabilities`
+    key (every valid M1/1.1 config) must keep loading unchanged, defaulting
+    to Adzuna-equivalent capabilities."""
+    from job_scout.models import SourceCapabilities
+
+    p = tmp_path / "source_registry.yaml"
+    p.write_text(VALID_SOURCE_REGISTRY_YAML, encoding="utf-8")
+    entries = config.load_source_registry(p)
+    assert entries[0].capabilities == SourceCapabilities()
+
+
+def test_load_source_registry_with_explicit_capabilities_block(tmp_path: Path) -> None:
+    p = tmp_path / "source_registry.yaml"
+    p.write_text(
+        VALID_SOURCE_REGISTRY_YAML.rstrip()
+        + "\n    capabilities:\n"
+        + "      keyword_search: false\n"
+        + "      company_filter: true\n"
+        + "      max_recommended_queries_per_request: 3\n",
+        encoding="utf-8",
+    )
+    entries = config.load_source_registry(p)
+    assert entries[0].capabilities.keyword_search is False
+    assert entries[0].capabilities.company_filter is True
+    assert entries[0].capabilities.max_recommended_queries_per_request == 3
+    # Untouched fields keep their default.
+    assert entries[0].capabilities.location_filter is True
+
+
+def test_load_source_registry_rejects_invalid_capability_type(tmp_path: Path) -> None:
+    p = tmp_path / "source_registry.yaml"
+    p.write_text(
+        VALID_SOURCE_REGISTRY_YAML.rstrip()
+        + "\n    capabilities:\n"
+        + "      keyword_search: not-a-boolean\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_source_registry(p)
+
+
+def test_packaged_source_registry_template_adzuna_capabilities_are_verified_defaults() -> None:
+    """decisions.md D-041/D-016/D-031: the packaged template's explicit
+    adzuna_api capabilities block must reproduce SourceCapabilities()'s own
+    defaults exactly (no invented support)."""
+    import yaml
+
+    from job_scout.models import SourceCapabilities, SourceRegistryEntry
+    from job_scout.resources import template_text
+
+    parsed = yaml.safe_load(template_text("source_registry.example.yaml"))
+    by_id = {source["source_id"]: source for source in parsed["sources"]}
+    adzuna = SourceRegistryEntry.model_validate(by_id["adzuna_api"])
+    assert adzuna.capabilities == SourceCapabilities()
+
+
+def test_non_adzuna_template_entries_have_no_explicit_capabilities_block() -> None:
+    """Guardrail audit (2026-08-08): only adzuna_api's capabilities are
+    actually verified (decisions.md D-016/D-031). Every other packaged
+    template entry — including greenhouse_public_feeds/lever_public_postings
+    — must NOT carry a fabricated `capabilities:` block claiming verified
+    support; they inherit SourceCapabilities()'s field default only, per
+    decisions.md D-041's explicit backward-compatibility design ("every
+    existing registry entry ... keeps validating and behaving unchanged").
+    This is a documentation/inert-metadata concern only: nothing in
+    Milestone 2 Task 1 reads `.capabilities` for planning/execution, and
+    every non-adzuna entry below is already non-executable regardless of
+    capabilities (manual_review/alert_only/requires_authorisation/blocked)."""
+    import yaml
+
+    from job_scout.models import SourceCapabilities, SourceRegistryEntry
+    from job_scout.resources import template_text
+
+    parsed = yaml.safe_load(template_text("source_registry.example.yaml"))
+    for raw_source in parsed["sources"]:
+        if raw_source["source_id"] == "adzuna_api":
+            continue
+        assert "capabilities" not in raw_source, (
+            f"{raw_source['source_id']} must not carry a fabricated capabilities "
+            "block until its real adapter verifies one (Milestone 2 Deliverable 5 "
+            "steps 5/7/8)."
+        )
+        entry = SourceRegistryEntry.model_validate(raw_source)
+        # Inherits the inert, approved-by-D-041 default — not a verified claim.
+        assert entry.capabilities == SourceCapabilities()
+
+
+def test_source_registry_entries_do_not_share_mutable_capability_state() -> None:
+    """Guardrail audit (2026-08-08): SourceRegistryEntry.capabilities uses a
+    direct nested-model default (`= SourceCapabilities()`), matching this
+    project's existing convention (SearchProfile.hard_filters uses the same
+    pattern). Pydantic v2 deep-copies BaseModel field defaults per instance
+    (verified empirically against pydantic 2.13.4 in this environment), so
+    this is safe without switching to Field(default_factory=...) — this test
+    guards that guarantee directly rather than relying on general Pydantic
+    knowledge."""
+    from tests.factories import make_source_entry
+
+    first = make_source_entry(source_id="first")
+    second = make_source_entry(source_id="second")
+    assert first.capabilities is not second.capabilities
+
+    first.capabilities.keyword_search = False
+    assert second.capabilities.keyword_search is True
+
+
 def test_execution_limits_rejects_non_positive(tmp_path: Path) -> None:
     p = tmp_path / "execution_limits.yaml"
     p.write_text(

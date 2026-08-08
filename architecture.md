@@ -118,7 +118,8 @@ enum value. Fields: `source_id`, `name`, `source_type` (enum:
 `configured|needs_credentials|needs_setup|not_configured`),
 `required_setup_actions: list[str]`, `adapter_ref: str | None`,
 `reliability_score: float | None`, `historical_match_count: int | None`,
-`duplicate_rate: float | None`, `last_successful_run: datetime | None`.
+`duplicate_rate: float | None`, `last_successful_run: datetime | None`,
+`capabilities: SourceCapabilities` (Milestone 2 addition — see §16.1).
 
 ### 2.8 `AccessMode` (`StrEnum`)
 `public_api | public_ats_feed | rss_or_sitemap | email_alert | permitted_html |
@@ -1106,3 +1107,41 @@ src/job_scout/
 `--data-dir`. No other module in §12's tree changed shape — the pipeline,
 planner, compliance gate, adapters, and repository are structurally
 untouched by Milestone 1.1.
+
+## 16. Milestone 2 Deliverable 5 step 1: canonical normalization boundary +
+`SourceCapabilities` (implemented)
+
+Confirms and formalises what §2.4/§3 already implied (decisions.md D-040):
+`Job` is the single canonical, normalized job model. Every `SourceAdapter`
+returns `RawJobRecord` only (source-native, pre-normalisation); exactly one
+normalizer function per source (`pipeline.py::_NORMALIZERS`, keyed by
+`source_id`) converts `RawJobRecord -> Job`; no stage after that lookup —
+deduplication, hard filters, pre-filter, Stage 5 scoring, persistence — ever
+branches on `source_id`. No new model was introduced; this is a documentation
+formalisation of already-implemented, already-tested behaviour, not a code
+change.
+
+### 16.1 `SourceCapabilities` (decisions.md D-041)
+
+`SourceRegistryEntry.capabilities: SourceCapabilities = SourceCapabilities()`
+— one typed nested object (not scattered top-level booleans) describing what
+a source's own adapter contract actually supports: `keyword_search`,
+`exact_phrase_search`, `location_filter`, `country_filter`, `city_filter`,
+`industry_filter`, `company_filter`, `remote_filter`, `salary_data`,
+`structured_description`, `pagination`, `page_size_control`,
+`posting_date_filter`, `stable_external_job_id`,
+`canonical_application_url` (all `bool`), and
+`max_recommended_queries_per_request: int | None`. Defaults reproduce
+`AdzunaAdapter`'s own verified contract (D-016/D-031), so every existing
+registry entry — none of which have a `capabilities` key today — keeps
+validating and behaving identically. `authentication_required` is
+deliberately not a field: `SourceRegistryEntry.auth_required` (§2.7) already
+means exactly that.
+
+This field is data only as of this step — nothing in the planner, CLI, or
+dedup logic reads it yet. It exists so the query planner (capability-gated
+query-mode selection), `job-scout plan`/`job-scout sources` (capability
+display), and the cross-source dedup tiers (`canonical_application_url`
+gating) have a typed source to read from once those specific pieces of work
+land (Milestone 2 Deliverable 5, later steps) — see `MILESTONE_2.md` for the
+full consumption design.
