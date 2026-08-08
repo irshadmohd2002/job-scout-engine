@@ -41,24 +41,34 @@ Running `job-scout run-once` pulls from more than one compliant source when
 configured, merges genuine cross-source duplicates into one job with
 multiple source observations instead of showing the same vacancy twice, and
 persists a real, evidence-carrying `VisaAssessment` per scored job — including
-authoritative UK/NL sponsor-register corroboration when the user has
-imported a register snapshot and the employer name matches. None of this
+authoritative UK sponsor-register corroboration (mandatory; Netherlands
+optional/stretch, see Workstream D) when the user has imported a register
+snapshot and the employer name matches. None of this
 requires editing Python; it's all through existing YAML config plus two new,
 narrowly-scoped config surfaces (company watchlist, sponsor-register import).
 
 ## In scope
 
+- The canonical normalization boundary (`RawJobRecord` -> adapter -> `Job`
+  -> generic pipeline) formalised as an explicit architectural rule, and a
+  typed `SourceCapabilities` model added to `SourceRegistryEntry` so the
+  query planner, CLI, and dedup logic can ask what a source actually
+  supports instead of assuming Adzuna-shaped behaviour everywhere
+  (`decisions.md` D-040/D-041).
 - A deterministic query-planning layer, `SearchProfile`-driven, replacing
   the current single candidate-history OR-query (Workstream A).
-- Two to three new, compliant `SourceAdapter` implementations, each gated by
+- **Exactly three** new, compliant `SourceAdapter` implementations — Reed,
+  Greenhouse, and Lever, all three in scope, none optional — each gated by
   the same `ComplianceGate` as Adzuna and shipped `manual_review` by default
-  in the packaged registry template (Workstream B).
+  in the packaged registry template (Workstream B; `decisions.md` D-044).
 - Cross-source deduplication tiers beyond Milestone 1's single-source
   fingerprinting, using deterministic evidence only — no embeddings
   (Workstream C).
 - `VisaAssessment` actually constructed and persisted per scored job, with
-  an evidence-precedence rule and optional authoritative sponsor-register
-  corroboration for UK/NL (Workstream D).
+  an evidence-precedence rule and authoritative sponsor-register
+  corroboration for the UK (**mandatory**); a Netherlands provider is
+  designed and kept as an **optional/stretch** addition that must not block
+  M2 completion (Workstream D; `decisions.md` D-042).
 - A repeatable, offline score-calibration tool (`job-scout evaluate`) against
   a hand-labelled fixture dataset — not a threshold change (Workstream E).
 - A `company_watchlist.yaml` config surface (schema already reserved,
@@ -68,7 +78,8 @@ narrowly-scoped config surfaces (company watchlist, sponsor-register import).
   command for user-supplied, already-downloaded register snapshot files —
   never a live government-register download.
 - Small, additive `SourceRegistryEntry`/`ExecutionLimits` schema growth to
-  represent per-source query capabilities and bound query fan-out.
+  represent per-source capabilities (`SourceCapabilities`, D-041) and bound
+  query fan-out.
 - Tests for every item above, opt-in `integration` tests for any new
   adapter that needs real credentials, no regression to the Milestone
   1/1.1 baseline.
@@ -76,22 +87,34 @@ narrowly-scoped config surfaces (company watchlist, sponsor-register import).
 ## Explicitly out of scope
 
 Everything Milestone 1/1.1 already excluded, plus, for this milestone
-specifically:
+specifically. This list was re-reviewed in full during the 2026-08-08
+planning refinement pass and every item below is confirmed rejected for M2
+— none of these may be started under cover of any M2 task:
 
-- Email notification delivery, WhatsApp/Telegram/push channels, any
-  outbound notification dispatch.
-- A continuous scheduler, GitHub Actions scheduling, VPS deployment.
-- A GUI or desktop installer.
-- Browser automation or any scraping that bypasses auth/CAPTCHAs/robots/rate
-  limits.
-- LLM semantic scoring, embeddings, or a vector database — Milestone 3/4
-  territory (`ROADMAP.md`), and explicitly excluded from the M2 cross-source
-  dedup design (Workstream C) even as an *option*.
-- Automatic CV tailoring, cover-letter generation, auto-application.
-- Multi-user SaaS, authentication, cloud database, PostgreSQL.
-- A plugin framework, adapter factory/dynamic loading (CLAUDE.md hard
+- **Notifications**: email sending/delivery, WhatsApp, Telegram, push
+  channels, or any outbound notification dispatch of any kind.
+- **Scheduling**: a continuous scheduler, GitHub Actions scheduled/cron
+  runs, VPS or other always-on/cloud deployment.
+- **A GUI or desktop installer** — CLI only.
+- **Browser automation, or scraping any source whose access is blocked or
+  whose terms are unclear** — not just sources that bypass auth/CAPTCHAs/
+  robots/rate limits outright (CLAUDE.md hard constraint 1); a source whose
+  terms this planning pass could not confirm stays `manual_review`/
+  `requires_authorisation` and is never built against, see the source
+  priority matrix's `requires verification` entries.
+- **LLM semantic scoring** of any kind in the matching pipeline, **embeddings**,
+  or a **vector database** — Milestone 3/4 territory (`ROADMAP.md`), and
+  explicitly excluded from the M2 cross-source dedup design (Workstream C)
+  even as an *option*.
+- **Automatic CV tailoring**, cover-letter generation, and
+  **auto-application** (the engine never submits an application on the
+  user's behalf).
+- **Multi-user SaaS architecture**, authentication, a cloud database, or
+  **PostgreSQL** — single-user, local SQLite only.
+- **A plugin framework**, adapter factory/dynamic loading (CLAUDE.md hard
   constraint 9; `architecture.md` §12 "What Milestone 1 deliberately does
-  not add" — still true for M2's small, fixed adapter count).
+  not add" — still true for M2's small, fixed adapter count of exactly
+  three new adapters, D-044).
 - **Email-alert ingestion** (inbound parsing of forwarded Naukri/iimjobs/
   foundit/Indeed-alert/GulfTalent/Bayt emails). The pre-existing
   `ROADMAP.md` draft listed this under "Milestone 2"; this planning pass
@@ -171,18 +194,42 @@ All additive; every valid Milestone 1/1.1 config continues to validate
 unchanged (same compatibility contract `MILESTONE_1_1.md` used).
 
 `models.py`:
+- **`Job` is unchanged and confirmed as the canonical normalized job model**
+  — audited against the current codebase (`RawJobRecord`'s own docstring,
+  `pipeline.py::_NORMALIZERS`) and found already sufficient as the adapter
+  boundary; no new `NormalizedJob` model is added. See `decisions.md` D-040
+  for the formalised rule (`External source payload -> source-specific
+  adapter -> Job -> generic pipeline`) and the required-normalization-field
+  list every M2 normalizer (`normalize_reed_record`,
+  `normalize_greenhouse_record`, `normalize_lever_record`) must follow.
 - `PlannedQuery(label: str, keywords: list[str], mode: Literal["exact_phrase",
   "any_of_words"], provenance: list[str])` — one concrete query a source will
   actually receive, with a human-readable `provenance` list (e.g.
   `["search.target_titles"]`) so `job-scout plan` can show *why* each query
   exists, not just what it is.
-- `SourceQueryCapabilities(supports_exact_phrase: bool = True,
-  supports_or_terms: bool = True, supports_industry_filter: bool = False,
-  max_recommended_queries_per_request: int | None = None)` — new field on
-  `SourceRegistryEntry` (`query_capabilities: SourceQueryCapabilities =
-  SourceQueryCapabilities()`), so the query planner can ask "can this source
-  even do an exact-phrase query" rather than assuming every source behaves
-  like Adzuna.
+- `SourceCapabilities(keyword_search: bool = True, exact_phrase_search: bool
+  = True, location_filter: bool = True, country_filter: bool = True,
+  city_filter: bool = True, industry_filter: bool = False, company_filter:
+  bool = False, remote_filter: bool = False, salary_data: bool = True,
+  structured_description: bool = False, pagination: bool = True,
+  page_size_control: bool = True, posting_date_filter: bool = False,
+  stable_external_job_id: bool = True, canonical_application_url: bool =
+  True, max_recommended_queries_per_request: int | None = None)` — new
+  field on `SourceRegistryEntry` (`capabilities: SourceCapabilities =
+  SourceCapabilities()`), replacing/superseding the earlier narrower
+  `SourceQueryCapabilities` draft (`decisions.md` D-037, now superseded by
+  D-041). One typed capability object, not scattered booleans, so the query
+  planner, `job-scout plan`/`job-scout sources`, and the cross-source dedup
+  tiers can all ask what a source actually supports instead of assuming
+  every source behaves like Adzuna. Defaults reproduce Adzuna's own
+  already-verified contract (D-016/D-031), so the existing registry entry
+  keeps validating and behaving unchanged with no `capabilities` key
+  present. `authentication_required` is deliberately **not** one of these
+  fields — `SourceRegistryEntry.auth_required` (existing, architecture.md
+  §2.7) already means exactly that; see `decisions.md` D-041 for the full
+  consumption design (query-mode selection, watchlist-vs-keyword fetch
+  strategy, dedup-tier eligibility) and which fields are recorded as data
+  only, not yet wired into scoring/matching logic.
 - `SelectedSource` gains `planned_queries: list[PlannedQuery]` and
   `estimated_request_count: int` (== `len(supported_countries) *
   len(planned_queries) * max_pages_per_source_country`, the same guardrail
@@ -203,10 +250,17 @@ unchanged (same compatibility contract `MILESTONE_1_1.md` used).
   `sponsor_registry.py::find_sponsor_match` returns; feeds
   `VisaAssessment.employer_registry_match`/`employer_registry_match_confidence`
   /`registry_source` (already-reserved fields, populated for the first time).
-- `EvaluationLabel` (`StrEnum`: `strong_match | adjacent_match | weak_match
-  | reject`) and `EvaluationJobFixture(job_id, title, description, company,
-  location, employment_type, posted_at, label, rationale)` — new, used only
-  by `evaluation.py`/`job-scout evaluate`, not by the core matching pipeline.
+- `EvaluationLabel` (`StrEnum`: `strong_match | adjacent_match | weak_match |
+  hard_filter_reject | deceptive_false_positive`) and
+  `EvaluationJobFixture(job_id, title, description, company, location,
+  employment_type, posted_at, label, rationale)` — new, used only by
+  `evaluation.py`/`job-scout evaluate`, not by the core matching pipeline.
+  Five labels, not four (`decisions.md` D-043): `reject` is renamed
+  `hard_filter_reject` for clarity, and `deceptive_false_positive` is added
+  — a fixture that superficially looks like a match on shallow keyword
+  overlap but a human would not consider the same role family (the class of
+  near-miss D-029/D-032–D-034 found by hand in live runs). See "Evaluation
+  dataset and calibration design" below.
 - **`VisaAssessment` and `VisaStatus` are unchanged** — see Sponsorship/visa
   enrichment design and `decisions.md` D-036 for why the existing six-value
   enum plus separate evidence fields (`citizenship_restrictions`,
@@ -299,7 +353,8 @@ asks to fix: `SearchProfile.target_titles`/`title_aliases`/`role_families`/
    per configured title), but request count scales linearly with
    `len(target_titles) × countries × max_pages` — unbounded unless capped,
    and multi-word phrases need the source to support an AND/exact-phrase
-   query at all (not every source will, per `SourceQueryCapabilities`).
+   query at all (not every source will, per `SourceCapabilities
+   .exact_phrase_search`).
 3. **Grouped title families.** One query per role family, folding aliases
    within the family into that query's OR terms. Bounded by role-family
    count (typically small), but loses per-title precision — an exact
@@ -318,8 +373,8 @@ A bounded hybrid of #2 and #3, explicitly capped, not #1 or #3 alone:
 - If `SearchProfile.target_titles` is non-empty, build one `PlannedQuery`
   per target title (`mode="exact_phrase"`, `provenance=["search.target_titles"]`),
   in the profile's configured order — this run's actual, explicit ask gets
-  the most precise query type a source supports (`SourceQueryCapabilities
-  .supports_exact_phrase`; falls back to `any_of_words` if the source
+  the most precise query type a source supports (`SourceCapabilities
+  .exact_phrase_search`; falls back to `any_of_words` if the source
   doesn't support exact phrases).
 - Truncate that list to `ExecutionLimits.max_queries_per_source_country`
   (same truncation pattern as the existing country cap, §11a/D-015 — preserve
@@ -355,7 +410,7 @@ for users who haven't configured it yet.
 ### Multi-word title handling
 
 Handled by the `exact_phrase` mode above for sources that support it
-(`SourceQueryCapabilities.supports_exact_phrase` — Adzuna's `what` parameter
+(`SourceCapabilities.exact_phrase_search` — Adzuna's `what` parameter
 is a genuine AND/phrase match, distinct from `what_or`). For a source that
 doesn't support exact-phrase queries, the query planner falls back to
 `any_of_words` for that specific title (never silently drops the title), and
@@ -367,7 +422,8 @@ match for a given configured title.
 
 ### Evidence precedence (never treated as equal)
 
-1. **Authoritative employer-registry match** (UK/NL only, where imported) —
+1. **Authoritative employer-registry match** (UK mandatory; Netherlands
+   optional/stretch, both only where imported — `decisions.md` D-042) —
    highest confidence. A match means the employer is *licensed/recognised to
    sponsor*, not that this specific vacancy offers sponsorship (CLAUDE.md
    hard constraint 4) — sets `status = employer_eligible`, confidence ≈ 0.7
@@ -407,17 +463,29 @@ average — keeps the "why" auditable in `job_text_evidence`/
 
 ### Sponsor registers
 
-Investigated per the task's minimum requirement:
+Investigated per the task's minimum requirement. Scope is split
+mandatory/optional (`decisions.md` D-042):
 
-- **UK — Register of licensed sponsors** (published by UK Home Office,
-  updatable CSV/ODS listing organisation name, town/city, county, and route).
-  Public, no auth, downloadable by any user. M2 does **not** automate the
-  download (hard constraint 1 + explicit instruction) — the user downloads
-  the file themselves and runs `job-scout sponsors import <file> --country
-  GB --register uk_home_office_sponsor_list`.
-- **Netherlands — IND Recognised Sponsors register.** Public register
-  published by the Dutch immigration service (IND), similarly downloadable.
-  Same import-only treatment.
+- **UK — Register of licensed sponsors (mandatory).** Published by UK Home
+  Office, updatable CSV/ODS listing organisation name, town/city, county,
+  and route. Public, no auth, downloadable by any user. M2 does **not**
+  automate the download (hard constraint 1 + explicit instruction) — the
+  user downloads the file themselves and runs `job-scout sponsors import
+  <file> --country GB --register uk_home_office_sponsor_list`. This
+  provider is required for M2's Definition of Done.
+- **Netherlands — IND Recognised Sponsors register (optional/stretch).**
+  Public register published by the Dutch immigration service (IND),
+  similarly downloadable, same import-only treatment and same generic
+  `sponsors import` framework as the UK provider — kept in the design to
+  prove the framework is register-agnostic, not UK-specific. **Does not
+  block M2 completion** if, at implementation time, any of: the published
+  file format proves difficult to parse reliably; authoritative access to a
+  current snapshot can't be verified to this project's usual evidence bar
+  (D-016/D-027/D-028/D-031); the register's schema changes materially from
+  what this document assumes; or building it would expand the milestone
+  disproportionately to its value. If any of those hold, ship M2 with the
+  UK provider only and note the Netherlands provider as deferred, not
+  abandoned.
 - **Every other country**: no register is assumed to exist. `country_work_
   permit_regime` stays a generic structural-prior string only; `status`
   never exceeds what job-text evidence alone supports. This is a deliberate
@@ -565,6 +633,71 @@ re-normalisation tooling) that nothing in this milestone's dedup or
 provenance design actually needs; **deferred**, listed in the gap table
 below.
 
+## Evaluation dataset and calibration design (Workstream E)
+
+`decisions.md` D-043 expands this workstream beyond its original four-label,
+single-profession sketch.
+
+### Label set
+
+`EvaluationLabel`: `strong_match | adjacent_match | weak_match |
+hard_filter_reject | deceptive_false_positive`. The last two are the ones
+that actually distinguish this design from a generic "labelled test set":
+
+- `hard_filter_reject` — a fixture a real Stage 1 hard-eligibility rule
+  should reject (location, citizenship, explicit no-sponsorship, etc.).
+  Feeds the **hard-filter correctness** metric below.
+- `deceptive_false_positive` — a fixture that shares surface vocabulary with
+  the candidate/search profile (a generic word, an adjacent-sounding title)
+  but is **not** the same role family on human review. Unlike
+  `hard_filter_reject`, these fixtures are expected to *pass* Stage 1 and
+  often Stage 2 — that's what makes them deceptive, and exactly the failure
+  mode this project's own live-run history (`decisions.md` D-029, D-032
+  through D-034) found only by manual inspection. Illustrative,
+  profession-agnostic patterns (not hard-coded anywhere in `src/
+  job_scout/` — fixture data only): Business Analyst vs. Data Analyst vs.
+  HR Analyst; Software Engineer vs. Sales Engineer; Registered Nurse vs.
+  Nurse Recruiter; Mechanical Engineer vs. Sales Engineer; Strategy Analyst
+  vs. Investment Analyst; Product Manager vs. Product Marketing Manager.
+
+### Fixture-set breadth
+
+`tests/fixtures/evaluation/` must include **more than one profession-shaped
+group** — the shipped example profile's strategy/transformation/
+chief-of-staff domain plus at least one materially different profession
+(e.g. nursing, software engineering, or sales), each with all five labels
+represented. This is what actually exercises the profession-agnostic
+matching engine against different vocabulary, rather than testing "does
+this tool work for the one profession we already tuned it against."
+
+### Metrics (`job-scout evaluate` prints all of these)
+
+- **Precision@5 / @10 / @20** — fraction of the top-k ranked fixtures (by
+  `final_score`) labelled `strong_match` or `adjacent_match`.
+- **Recall of labelled strong matches** — fraction of all `strong_match`
+  fixtures that land above the `digest` notification-tier threshold.
+- **False-positive rate** — fraction of `deceptive_false_positive` fixtures
+  that land in `priority`/`digest` tiers. The metric this workstream exists
+  to add: it directly measures whether the milestone's namesake risk is
+  caught.
+- **Hard-filter correctness** — fraction of `hard_filter_reject` fixtures
+  Stage 1 actually rejects (`HardFilterResult.passed is False`) — a direct
+  pass/fail count, not a score-based metric.
+- **Ranking inversions** — count of labelled-fixture pairs where a
+  lower-ranked label scores strictly higher than a higher-ranked label
+  (label order: `strong_match > adjacent_match > weak_match >
+  deceptive_false_positive`/`hard_filter_reject`). Generalises the
+  ranking-order regressions D-032/D-033/D-034 found and fixed by hand into
+  a repeatable, automated check.
+- **Threshold-tier distribution** — count of labelled fixtures landing in
+  each `notification_tier`, cross-tabbed by label.
+
+`final_score` and every `ScoreComponent` value are **relevance scores** — a
+deterministic, weighted-sum ranking signal — and must be described that way
+everywhere, in `job-scout evaluate`'s own output included. Never described
+as a probability or confidence percentage; nothing about Milestone 2 changes
+that this is a rank-ordering signal, not a calibrated probability estimate.
+
 ## CLI changes
 
 - **`job-scout plan`** (existing command, extended, not a new command):
@@ -588,10 +721,12 @@ below.
   snapshot file (CSV) into `sponsor_registry_entries`, replacing prior rows
   for that `(country, register_name)`. Never fetches anything itself.
 - **`job-scout evaluate --dataset <path> --candidate-profile <ref>
-  --search-profile <id>`** (new): runs Stage 2/5 scoring against a labelled
-  fixture dataset (no adapters, no network, no persistence) and prints
-  precision@10/@20, recall of labelled strong matches, false-positive rate,
-  and a tier-vs-label cross-tab. Backs Workstream E.
+  --search-profile <id>`** (new): runs Stage 1/2/5 against a labelled
+  fixture dataset (no adapters, no network, no persistence) and prints the
+  full metric set from "Evaluation dataset and calibration design" above
+  (precision@5/@10/@20, recall, false-positive rate, hard-filter
+  correctness, ranking inversions, threshold-tier distribution). Backs
+  Workstream E.
 - **`job-scout run-once`** — CLI surface unchanged (`--profile`, `--dry-run`,
   etc.); internally now issues multiple `fetch()` calls per source (bounded
   by `max_queries_per_source_country`) and persists a `VisaAssessment`
@@ -606,18 +741,23 @@ own "keep the CLI small" instruction.
 
 - `execution_limits.yaml`: `max_queries_per_source_country` (new,
   positive int, conservative default).
-- `source_registry.yaml`: `query_capabilities` (new, optional, defaults to
-  Adzuna-equivalent capabilities so every existing entry keeps working
-  unchanged); three new real entries (`reed_api`, `greenhouse_public_feeds`
-  with a real `adapter_ref`, `lever_public_postings` with a real
-  `adapter_ref`), all `manual_review` by default.
+- `source_registry.yaml`: `capabilities` (new `SourceCapabilities` block,
+  optional, defaults to Adzuna-equivalent capabilities so every existing
+  entry keeps working unchanged — `decisions.md` D-041); three new real
+  entries (`reed_api`, `greenhouse_public_feeds` with a real `adapter_ref`,
+  `lever_public_postings` with a real `adapter_ref`), all `manual_review` by
+  default, each with a `capabilities` block reflecting what it actually
+  supports (e.g. Greenhouse/Lever set `company_filter: true`,
+  `keyword_search: false`).
 - `company_watchlist.yaml` (new template): empty/illustrative list of
   `CompanyWatchlistEntry` rows, generic placeholder company names only
   (CLAUDE.md hard constraint 8 — no real employer names in a tracked
   template).
-- `sponsor_registries.yaml` (new template): which registers are enabled
-  (`GB`/`uk_home_office_sponsor_list`, `NL`/`ind_recognised_sponsors`) and
-  where each snapshot is expected to live in the user's data directory —
+- `sponsor_registries.yaml` (new template): which registers are enabled —
+  `GB`/`uk_home_office_sponsor_list` (mandatory, ships enabled) and
+  `NL`/`ind_recognised_sponsors` (optional/stretch, D-042 — ships present
+  but commented out/disabled if the provider isn't built this milestone) —
+  and where each snapshot is expected to live in the user's data directory;
   metadata only, never the register data itself.
 - `scoring_weights.yaml`: **unchanged** — `visa_relocation`'s existing
   weight/component slot gets better evidence, not a new slot.
@@ -646,7 +786,16 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
   `test_fetch_never_exceeds_max_pages`.
 - **Source capability differences**: planner tests with a mixed registry
   fixture (one entry supporting exact-phrase, one not) assert each gets the
-  query mode its `query_capabilities` allows.
+  query mode its `capabilities` allows; a `company_filter: true` fixture
+  entry asserts the planner emits zero keyword `PlannedQuery`s for it and
+  relies on watchlist fan-out instead; a `SourceCapabilities` round-trip
+  test asserts the Adzuna-equivalent defaults keep an existing
+  `capabilities`-less registry fixture validating unchanged.
+- **Capability-gated dedup eligibility**: a fixture pair — one source with
+  `canonical_application_url: false` — asserts the cross-source exact-URL
+  dedup tier never fires for it, even when its URL happens to coincide with
+  another source's, guarding against a false merge from a non-canonical URL
+  (`decisions.md` D-041).
 - **Adapter normalisation, pagination, timeouts/rate limits**: one test
   module per new adapter (`test_reed_adapter.py`,
   `test_greenhouse_adapter.py`, `test_lever_adapter.py`), same rigor as
@@ -670,6 +819,16 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
   adapters (Adzuna-shaped + a second source) whose fixtures represent the
   same real vacancy, asserting one canonical `Job` with two provenance
   entries reaches the results list, not two.
+- **Evaluation dataset and metrics** (`decisions.md` D-043): a hand-computed
+  fixture set spanning at least two profession-shaped groups and all five
+  `EvaluationLabel` values, with unit tests verifying — by hand — each of
+  precision@5/@10/@20, recall of labelled strong matches, false-positive
+  rate (`deceptive_false_positive` fixtures landing in `priority`/`digest`),
+  hard-filter correctness (`hard_filter_reject` fixtures actually rejected
+  at Stage 1), ranking inversions (a deliberately-inserted inversion fixture
+  pair must be detected and counted), and threshold-tier distribution. A
+  separate assertion confirms `job-scout evaluate`'s own output never uses
+  the word "probability" — only "relevance score"/"score".
 - **No regression to M1/1.1 scoring**: the full existing `test_scoring.py`/
   `test_prefilter.py`/`test_planner.py` suites must keep passing unmodified
   — any assertion that would need to change is a red flag for this
@@ -715,10 +874,15 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
       count for a broad profile stays bounded by
       `max_queries_per_source_country × max_countries_per_run ×
       max_pages_per_source_country` — never unbounded.
-- [ ] At least two new adapters (Reed + one of Greenhouse/Lever, minimum)
-      pass a full `respx`-mocked test suite mirroring `test_adzuna_adapter
-      .py`'s rigor, and are wired into `pipeline.py`'s normalizer/adapter
-      dispatch.
+- [ ] `Job` is confirmed as the canonical normalized model (`decisions.md`
+      D-040) and every new adapter's normalizer populates the full
+      required-field list; `SourceCapabilities` (D-041) validates on every
+      registry entry, with the Adzuna-equivalent defaults leaving the
+      existing entry's behaviour unchanged.
+- [ ] **All three** new adapters — Reed, Greenhouse, **and** Lever, no
+      longer "at least two" — pass a full `respx`-mocked test suite
+      mirroring `test_adzuna_adapter.py`'s rigor, and are wired into
+      `pipeline.py`'s normalizer/adapter dispatch (`decisions.md` D-044).
 - [ ] A synthetic two-source fixture representing the same real vacancy
       merges into one canonical `Job` with two `source_provenance` rows,
       not two `Job` rows.
@@ -726,13 +890,19 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
       (`repository.save_visa_assessment`) for every job that reaches Stage 5
       scoring; a fixture UK-register import + a job from a listed employer
       yields `employer_eligible`; explicit no-sponsorship job text overrides
-      a registry match to `confirmed_no`.
+      a registry match to `confirmed_no`. The UK provider is required for
+      this criterion; a Netherlands provider is optional and its absence
+      does not fail this checkbox (`decisions.md` D-042).
 - [ ] `job-scout sponsors import` round-trips a fixture CSV into
       `sponsor_registry_entries` and is queryable via
       `sponsor_registry.find_sponsor_match`.
-- [ ] `job-scout evaluate` runs against a fixture labelled dataset and
-      prints deterministic, hand-verifiable precision@10/@20/recall/
-      false-positive-rate/tier-cross-tab numbers.
+- [ ] `job-scout evaluate` runs against a labelled fixture dataset spanning
+      **multiple professions** and all **five** `EvaluationLabel` values
+      (including `deceptive_false_positive`), and prints deterministic,
+      hand-verifiable precision@5/@10/@20, recall of labelled strong
+      matches, false-positive rate, hard-filter correctness, ranking
+      inversions, and threshold-tier-distribution numbers — described as
+      relevance scores, never probabilities (`decisions.md` D-043).
 - [ ] Full `pytest` suite (existing 288 + all new tests) passes; `ruff
       check .` clean; `mypy --strict src` clean — same bar as the M1/1.1
       baseline, no regression.
@@ -816,12 +986,13 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
 
 | Requirement | Current capability | Gap | M2 action | Deferred |
 |---|---|---|---|---|
-| Query planning | Single `CandidateProfile.title_aliases` OR-of-words query, one per source (D-029's known limitation) | `SearchProfile` signals never inform retrieval; no per-title precision; no visibility into generated queries | New `query_planner.py`; `PlannedQuery`/`SourceQueryCapabilities`; `plan` shows queries + estimated request counts | Per-source adaptive query tuning from historical hit-rate (needs `SourcePerformance`, M6) |
+| Canonical normalization boundary | `Job` already the sole post-adapter model (`RawJobRecord` docstring, `pipeline.py::_NORMALIZERS` dict dispatch) | Rule was implicit (code-only), never stated as an explicit architectural contract; no source capability metadata to let generic code ask "does this source support X" instead of assuming Adzuna-shaped behaviour | Formalise the rule (`decisions.md` D-040); add typed `SourceCapabilities` on `SourceRegistryEntry` (D-041) | A new `NormalizedJob` model (audited, not needed — `Job` already serves this role) |
+| Query planning | Single `CandidateProfile.title_aliases` OR-of-words query, one per source (D-029's known limitation) | `SearchProfile` signals never inform retrieval; no per-title precision; no visibility into generated queries | New `query_planner.py`; `PlannedQuery`/`SourceCapabilities`; `plan` shows queries + estimated request counts | Per-source adaptive query tuning from historical hit-rate (needs `SourcePerformance`, M6) |
 | Multi-source adapters | One adapter (Adzuna) | No adapter diversity to exercise source-selection scoring/diversity rule in practice | Reed, Greenhouse, Lever adapters + watchlist config | Every other evaluated source (UK Find a Job, EURES, Canada Job Bank, SEEK, Indeed alerts) — insufficient confirmed access or terms clarity (see priority matrix) |
 | Cross-source deduplication | Tier 1 exact (per-source only); Tier 2 requires byte-identical description hash (rarely fires cross-source) | No practical cross-source merge path given real description differences (e.g. Adzuna truncation) | New exact-cross-source-URL tier + bounded Jaccard "probable duplicate" tier, no embeddings | Fuzzy company-name-only dedup (too weak a signal alone); near-duplicate SimHash (architecture.md §8 already earmarks this as a future swap, not needed yet) |
-| Sponsorship enrichment | `VisaAssessment` schema exists, **never constructed** anywhere in `src/` (D-006's M1 exclusion never revisited) | No real visa signal beyond a Stage 5 regex `ScoreComponent`; no registry corroboration | `matching/visa.py::assess_visa`, wired into pipeline; UK/NL sponsor-register import + join | Fuzzy/alias sponsor-name matching; registers for countries without a public one; live register downloading |
+| Sponsorship enrichment | `VisaAssessment` schema exists, **never constructed** anywhere in `src/` (D-006's M1 exclusion never revisited) | No real visa signal beyond a Stage 5 regex `ScoreComponent`; no registry corroboration | `matching/visa.py::assess_visa`, wired into pipeline; UK sponsor-register import + join (mandatory); NL provider (optional/stretch, non-blocking, D-042) | Fuzzy/alias sponsor-name matching; registers for countries without a public one; live register downloading |
 | Source provenance | `source_provenance` table already an append-only observation log in practice (unintentionally) | No read path exposing full per-job observation history; no first/last-seen derivation | `JobRepository.list_provenance()`; document the existing append-only behaviour as intentional | Raw-payload persistence (not needed for the dedup/provenance design M2 actually uses) |
-| Threshold calibration | Fixed thresholds (85/70), never empirically validated (architecture.md §10 explicitly flags this) | No tooling to measure precision/recall against labelled data | `job-scout evaluate` + fixture labelled dataset + metrics | Actually changing the thresholds (needs a larger, real-usage-derived dataset first) |
+| Threshold calibration | Fixed thresholds (85/70), never empirically validated (architecture.md §10 explicitly flags this) | No tooling to measure precision/recall against labelled data, and no labelled data covering deceptive near-miss cases or more than one profession | `job-scout evaluate` + multi-profession fixture dataset (5 labels incl. `deceptive_false_positive`) + expanded metric set (precision@5/@10/@20, recall, false-positive rate, hard-filter correctness, ranking inversions, threshold-tier distribution) | Actually changing the thresholds (needs a larger, real-usage-derived dataset first) |
 | Compliance | Gate + rule table already exhaustive and adapter-count-agnostic | None — gate needs no change for 3 more `public_api`/`public_ats_feed` sources | None (verified no code change needed) | Terms review for UK Find a Job/EURES/Canada Job Bank/SEEK (human action, not code) |
 | Configuration | 6 templates, YAML-first, `job-scout init` | No config surface for watchlists (schema reserved but unused) or sponsor registers | 2 new templates (`company_watchlist.yaml`, `sponsor_registries.yaml`) + loaders | A structured per-profile threshold-override config (Workstream E's future consumer, not needed until thresholds are actually recalibrated) |
 | Persistence | SQLite, schema v1, `visa_assessments`/watchlist tables reserved but write-path unused | Missing canonical-URL index; sponsor register has no table at all | Schema v2: 1 new index, 1 new table (`sponsor_registry_entries`), 2 new indexed columns on `visa_assessments` | Raw-payload storage; a `SourceRegistryRepository` for runtime registry mutation (still explicitly deferred per D-009) |
@@ -847,115 +1018,191 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
 
 ## Deliverable 5: M2 implementation sequence
 
-1. **Domain-model and config scaffolding.** `PlannedQuery`,
-   `SourceQueryCapabilities`, extended `CompanyWatchlistEntry`,
-   `SponsorRegistryEntry`/`SponsorRegistryMatch`, `EvaluationLabel`/
-   `EvaluationJobFixture`; `ExecutionLimits.max_queries_per_source_country`;
-   `sqlite_repo.py` schema bump to v2 (new index, new table, new visa columns)
-   with no behavioural change yet. **Files**: `models.py`, `config.py`,
-   `repository/sqlite_repo.py`. **Tests**: model validation round-trips,
-   config loader tests, a schema-migration test opening a v1-stamped fixture
-   database under v2 code and asserting the new objects appear without data
-   loss. **Acceptance**: full existing suite still green; new models/config
-   importable and validated in isolation. **Dependency**: none.
+Twelve steps, not eleven — the previous draft's step 1 ("domain-model and
+config scaffolding") is split into two: the canonical-normalization-boundary
+and source-capability work (D-040/D-041) now comes first, on its own, ahead
+of the rest of the domain-model scaffolding. Reasoning: `SourceCapabilities`
+is a genuine dependency of the query planner (step 3 reads
+`exact_phrase_search`/`company_filter`) and of the dedup tier work (step 9
+reads `canonical_application_url`), so giving it its own step makes that
+dependency explicit rather than burying it inside a larger "scaffolding"
+step; it also lets the `Job`-is-already-canonical confirmation (a pure audit
+finding, no code change) land and be reviewed independently of the rest of
+the schema growth. Every other step keeps its previous relative position —
+this is a split, not a reordering, of the prior sequence.
 
-2. **Query planner.** New `source_intelligence/query_planner.py`
-   implementing the bounded hybrid design above; `planner.py::build_plan`
+1. **Canonical normalization boundary + source capabilities.** Confirm
+   (already true, per D-040 — no code change) that `Job` is the canonical
+   normalized model and every adapter's future normalizer must follow the
+   required-field list. Add `SourceCapabilities` (D-041) and
+   `SourceRegistryEntry.capabilities`. **Files**: `models.py`
+   (`SourceCapabilities`, `SourceRegistryEntry.capabilities` field),
+   `source_registry.example.yaml` (capability blocks for the existing
+   Adzuna entry, defaulted). **Tests**: `SourceCapabilities` default-value
+   round-trip (Adzuna-equivalent defaults keep a `capabilities`-less
+   registry fixture validating unchanged); a docstring/architecture
+   consistency check is not automatable and is instead covered by this
+   planning document's own final consistency pass. **Acceptance**: full
+   existing suite still green (this step changes no runtime behaviour, only
+   adds an optional field with safe defaults); `SourceCapabilities`
+   importable and validated in isolation. **Dependency**: none. **Non-goals**:
+   no new `NormalizedJob` model; no capability field wired into any
+   scoring/matching/dedup logic yet (that happens in the specific later
+   steps that need it — see D-041's "real consumption points").
+
+2. **Query-plan/domain changes.** The rest of the original scaffolding:
+   `PlannedQuery`, extended `CompanyWatchlistEntry`, `SponsorRegistryEntry`/
+   `SponsorRegistryMatch`, `EvaluationLabel`/`EvaluationJobFixture` (five
+   labels, D-043); `ExecutionLimits.max_queries_per_source_country`;
+   `sqlite_repo.py` schema bump to v2 (new index, new table, new visa
+   columns) with no behavioural change yet. **Files**: `models.py`,
+   `config.py`, `repository/sqlite_repo.py`. **Tests**: model validation
+   round-trips, config loader tests, a schema-migration test opening a
+   v1-stamped fixture database under v2 code and asserting the new objects
+   appear without data loss. **Acceptance**: full existing suite still
+   green; new models/config importable and validated in isolation.
+   **Dependency**: step 1 (some of these models reference
+   `SourceCapabilities`-shaped concepts in their docs/tests, though not by
+   a hard type dependency). **Non-goals**: no query-planner logic yet
+   (step 3); no adapter code yet.
+
+3. **`SearchProfile`-driven query planner.** New
+   `source_intelligence/query_planner.py` implementing the bounded hybrid
+   design above, reading `SourceCapabilities.exact_phrase_search`/
+   `keyword_search`/`company_filter` (step 1) to decide query mode and
+   whether to generate keyword queries at all; `planner.py::build_plan`
    populates `SelectedSource.planned_queries`/`estimated_request_count`;
    `cli.py::_format_plan_human` (and `--json` output) show them. **Files**:
    new `query_planner.py`, `planner.py`, `cli.py`, `models.py`. **Tests**:
    query-planner unit tests (all branches from the Query-planning design
-   section), planner integration test, `test_cli_plan.py` output test.
-   **Acceptance**: `job-scout plan` shows queries and a request-count
-   estimate that matches a hand-computed bound. **Dependency**: step 1.
+   section, plus the capability-gated branches from step 1's "Source
+   capability differences" testing-strategy bullet), planner integration
+   test, `test_cli_plan.py` output test. **Acceptance**: `job-scout plan`
+   shows queries and a request-count estimate that matches a hand-computed
+   bound. **Dependency**: steps 1, 2. **Non-goals**: no pipeline wiring yet
+   (step 4) — the planner only *produces* `PlannedQuery` objects, nothing
+   calls `fetch()` differently until the next step.
 
-3. **Wire planned queries into execution.** `pipeline.py::run_once` calls
-   `adapter.fetch()` once per `PlannedQuery`, aggregating raw records before
-   normalisation/dedup (unchanged downstream). `AdzunaAdapter` itself is
-   **not** modified. **Files**: `pipeline.py`. **Tests**: a fixture adapter
-   counting `fetch()` calls, asserting the count equals
+4. **Wire multi-query planning into the pipeline.** `pipeline.py::run_once`
+   calls `adapter.fetch()` once per `PlannedQuery`, aggregating raw records
+   before normalisation/dedup (unchanged downstream). `AdzunaAdapter` itself
+   is **not** modified. **Files**: `pipeline.py`. **Tests**: a fixture
+   adapter counting `fetch()` calls, asserting the count equals
    `len(planned_queries)` per source and stays within the guardrail bound
    across a broad profile. **Acceptance**: existing Adzuna-only tests still
    pass with the new call pattern (1 query ⇒ 1 call, same as before for any
-   config that hasn't set `target_titles`). **Dependency**: step 2.
+   config that hasn't set `target_titles`). **Dependency**: step 3.
+   **Non-goals**: no new adapters yet — this step only changes *how many
+   times* the existing Adzuna adapter is called, not what calls it.
 
-4. **First new adapter: Reed.** `sources/reed.py`, registry template entry
-   (`manual_review`), pipeline normalizer + `_default_adapter_factory`
-   branch. **Files**: new `sources/reed.py`, `pipeline.py`,
-   `source_registry.example.yaml`. **Tests**: `respx`-mocked adapter tests
-   mirroring `test_adzuna_adapter.py`; normalisation fixture test; one
-   opt-in `integration`-marked test. **Acceptance**: a fixture-driven
-   `run-once` pulls from both Adzuna and Reed fixtures in one run.
-   **Dependency**: step 3 (Reed uses the query planner's keyword queries).
+5. **Reed adapter.** `sources/reed.py`, registry template entry
+   (`manual_review`) with a real `capabilities` block, `pipeline.py`
+   normalizer (`normalize_reed_record`, per D-040's required-field list) +
+   `_default_adapter_factory` branch. **Files**: new `sources/reed.py`,
+   `pipeline.py`, `source_registry.example.yaml`. **Tests**:
+   `respx`-mocked adapter tests mirroring `test_adzuna_adapter.py`;
+   normalisation fixture test (asserts every D-040 required field is
+   populated or correctly `None`); one opt-in `integration`-marked test.
+   **Acceptance**: a fixture-driven `run-once` pulls from both Adzuna and
+   Reed fixtures in one run. **Dependency**: step 4 (Reed uses the query
+   planner's keyword queries). **Non-goals**: no watchlist dependency —
+   Reed is an aggregator like Adzuna, useful immediately.
 
-5. **Company watchlist config.** `load_company_watchlist`,
+6. **ATS watchlist/config model.** `load_company_watchlist`,
    `company_watchlist.example.yaml` template, `job-scout init` wiring.
    **Files**: `config.py`, new template, `bootstrap.py`. **Tests**: loader
    tests, template validation, `test_init.py` extension. **Acceptance**:
    `job-scout init` creates the new template; an empty watchlist validates
-   cleanly (zero entries is a valid, common state). **Dependency**: step 1.
+   cleanly (zero entries is a valid, common state). **Dependency**: step 2.
+   **Non-goals**: no adapter reads this yet (steps 7/8) — this step is the
+   config surface only.
 
-6. **Greenhouse adapter.** `sources/greenhouse.py`, one fetch per
+7. **Greenhouse adapter.** `sources/greenhouse.py`, one fetch per
    watchlisted board token, registry template entry updated with a real
-   `adapter_ref`. **Files**: new `sources/greenhouse.py`, `pipeline.py`,
-   template. **Tests**: `respx`-mocked pagination/rate-limit tests,
-   normalisation fixture, empty-watchlist-produces-zero-calls test.
-   **Acceptance**: mirrors Adzuna/Reed's test rigor. **Dependency**: step 5.
+   `adapter_ref` and a `capabilities` block (`company_filter: true`,
+   `keyword_search: false`, per step 1). **Files**: new
+   `sources/greenhouse.py`, `pipeline.py`, template. **Tests**:
+   `respx`-mocked pagination/rate-limit tests, normalisation fixture,
+   empty-watchlist-produces-zero-calls test. **Acceptance**: mirrors
+   Adzuna/Reed's test rigor. **Dependency**: step 6. **Non-goals**: no
+   keyword-query support — Greenhouse's feed returns all of a company's
+   open roles regardless of query.
 
-7. **Lever adapter.** `sources/lever.py`, same shape as Greenhouse. **Files/
-   Tests/Acceptance**: mirror step 6. **Dependency**: step 5 (can run in
-   parallel with step 6 — no shared code beyond the watchlist loader).
+8. **Lever adapter.** `sources/lever.py`, same shape as Greenhouse.
+   **Files/Tests/Acceptance**: mirror step 7. **Dependency**: step 6 (can
+   run in parallel with step 7 — no shared code beyond the watchlist
+   loader). **Non-goals**: same as step 7.
 
-8. **Cross-source deduplication tiers.** `deduplication.py` gains the
-   exact-cross-source-URL tier and the bounded-Jaccard probable-duplicate
-   tier; `sqlite_repo.py` gains the canonical-URL index and (if not already
-   done in step 1) the lookup it backs. **Files**: `deduplication.py`,
-   `repository/sqlite_repo.py`, `pipeline.py` (wiring the new tier into the
-   existing dedup call site). **Tests**: unit tests per new tier, including
-   explicit false-merge-guard negative cases; an end-to-end multi-source
-   pipeline test (step 4/6/7's fixtures) asserting one canonical `Job` with
-   multiple provenance rows. **Acceptance**: the multi-source pipeline test
-   passes; every existing Tier 1–3 test still passes unmodified.
-   **Dependency**: steps 4, 6, 7 (needs ≥2 real source shapes to test
-   meaningfully, though the tier logic itself only depends on step 1's
-   schema work).
+9. **Cross-source deduplication and provenance.** `deduplication.py` gains
+   the exact-cross-source-URL tier (gated on both sources'
+   `SourceCapabilities.canonical_application_url`, step 1) and the
+   bounded-Jaccard probable-duplicate tier; `sqlite_repo.py` gains the
+   canonical-URL index and `JobRepository.list_provenance()`. **Files**:
+   `deduplication.py`, `repository/sqlite_repo.py`, `pipeline.py` (wiring
+   the new tier into the existing dedup call site). **Tests**: unit tests
+   per new tier, including explicit false-merge-guard negative cases (both
+   a same-company-different-location case and a
+   `canonical_application_url: false` capability-gating case, per step 1's
+   testing-strategy addition); an end-to-end multi-source pipeline test
+   (steps 5/7/8's fixtures) asserting one canonical `Job` with multiple
+   provenance rows. **Acceptance**: the multi-source pipeline test passes;
+   every existing Tier 1–3 test still passes unmodified. **Dependency**:
+   steps 5, 7, 8 (needs ≥2 real source shapes to test meaningfully, though
+   the tier logic itself only depends on steps 1–2's schema work).
+   **Non-goals**: no embeddings/near-duplicate model; no
+   `SourceObservation` model (D-038 — the existing `source_provenance` table
+   already serves this).
 
-9. **Sponsor-registry model + visa evidence enrichment.**
-   `SponsorRegistryEntry` persistence + `sponsor_registry.py::
-   find_sponsor_match`; `job-scout sponsors import`; new `matching/visa.py::
-   assess_visa` (consolidating the duplicated positive/negative regex
-   patterns out of `scoring.py`/`hard_filters.py` into a shared
-   `matching/visa_patterns.py`); pipeline wiring to construct and persist a
-   `VisaAssessment` per scored job. **Files**: `models.py` (if not done in
-   step 1), `repository/sqlite_repo.py`, `source_intelligence/
-   sponsor_registry.py`, `matching/visa.py`, `matching/visa_patterns.py`,
-   `matching/scoring.py`/`matching/hard_filters.py` (import from the shared
-   module instead of their own copies), `cli.py`, `pipeline.py`. **Tests**:
-   sponsor-name normalisation/join tests (true positive, deliberate
-   near-miss false-positive guard), visa-precedence tests (all five
-   evidence-combination cases from the Testing strategy section), a
-   pipeline integration test asserting `save_visa_assessment` is actually
-   called. **Acceptance**: the two fixture scenarios in this document's
-   Acceptance criteria (registry match ⇒ `employer_eligible`; explicit
-   negative text overrides a registry match) both pass. **Dependency**:
-   step 1 only — independent of adapters/dedup, can run in parallel with
-   steps 4–8.
+10. **Sponsor registry + UK provider + visa enrichment.**
+    `SponsorRegistryEntry` persistence + `sponsor_registry.py::
+    find_sponsor_match`; `job-scout sponsors import`; UK Home Office
+    register parser (mandatory, D-042); new `matching/visa.py::assess_visa`
+    (consolidating the duplicated positive/negative regex patterns out of
+    `scoring.py`/`hard_filters.py` into a shared `matching/
+    visa_patterns.py`); pipeline wiring to construct and persist a
+    `VisaAssessment` per scored job. A Netherlands provider may be added
+    here too **only if** none of D-042's non-blocking conditions apply —
+    otherwise it's explicitly deferred without failing this step.
+    **Files**: `models.py` (if not done in step 2),
+    `repository/sqlite_repo.py`, `source_intelligence/sponsor_registry.py`,
+    `matching/visa.py`, `matching/visa_patterns.py`,
+    `matching/scoring.py`/`matching/hard_filters.py` (import from the
+    shared module instead of their own copies), `cli.py`, `pipeline.py`.
+    **Tests**: sponsor-name normalisation/join tests (true positive,
+    deliberate near-miss false-positive guard), visa-precedence tests (all
+    five evidence-combination cases from the Testing strategy section), a
+    pipeline integration test asserting `save_visa_assessment` is actually
+    called. **Acceptance**: the two UK-fixture scenarios in this document's
+    Acceptance criteria (registry match ⇒ `employer_eligible`; explicit
+    negative text overrides a registry match) both pass; a missing/deferred
+    Netherlands provider does not fail this step. **Dependency**: step 2
+    only — independent of adapters/dedup, can run in parallel with steps
+    5–9. **Non-goals**: no live register download (either country); no
+    fuzzy/alias employer-name matching.
 
-10. **Evaluation dataset + calibration tooling.** `evaluation.py`, a small
-    fixture labelled dataset (illustrative, generic — no real personal
-    data), `job-scout evaluate` command. **Files**: new `evaluation.py`,
-    `cli.py`, fixture dataset file(s) under `tests/fixtures/evaluation/`.
-    **Tests**: metric-arithmetic unit tests against a hand-computed fixture
-    (precision@k, recall, false-positive rate, tier cross-tab all verified
-    by hand for a small known dataset). **Acceptance**: `job-scout evaluate
-    --dataset <fixture>` prints numbers matching the hand-computed
-    expectations exactly. **Dependency**: none beyond the existing Stage
-    2/5 scoring functions — can run fully in parallel with everything else.
+11. **Evaluation tooling and threshold-calibration preparation.**
+    `evaluation.py`, a multi-profession labelled fixture dataset (five
+    labels incl. `deceptive_false_positive`, illustrative/generic — no real
+    personal data, D-043), `job-scout evaluate` command implementing the
+    full metric set from "Evaluation dataset and calibration design".
+    **Files**: new `evaluation.py`, `cli.py`, fixture dataset file(s) under
+    `tests/fixtures/evaluation/`. **Tests**: the evaluation-dataset unit
+    tests from the Testing strategy section (metric arithmetic verified by
+    hand, including ranking-inversion detection and the
+    no-"probability"-language assertion). **Acceptance**: `job-scout
+    evaluate --dataset <fixture>` prints numbers matching the hand-computed
+    expectations exactly, across at least two profession-shaped fixture
+    groups. **Dependency**: none beyond the existing Stage 1/2/5 functions
+    — can run fully in parallel with everything else. **Non-goals**: does
+    not change `notification_thresholds` (85/70) — this step builds the
+    calibration *tool*, not a recalibration.
 
-11. **End-to-end acceptance.** Full `pytest`/`ruff check .`/`mypy --strict
-    src` green; a live (or live-shaped) smoke run of `job-scout plan`/
-    `run-once --dry-run` exercising Adzuna + Reed together; every
+12. **End-to-end M2 acceptance.** Full `pytest`/`ruff check .`/`mypy
+    --strict src` green; a live (or live-shaped) smoke run of `job-scout
+    plan`/`run-once --dry-run` exercising Adzuna + Reed together; every
     `MILESTONE_2.md` acceptance-criteria checkbox verified;
     `ROADMAP.md`/`decisions.md` confirmed consistent with what was actually
     built (not just what was planned, per this repo's own documentation
-    discipline). **Dependency**: all prior steps.
+    discipline). **Dependency**: all prior steps. **Non-goals**: no
+    Milestone 3+ work (email-alert ingestion, automatic source discovery,
+    semantic matching) started under cover of this acceptance pass.

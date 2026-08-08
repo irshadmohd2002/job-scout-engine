@@ -1014,6 +1014,12 @@ shape of, for no representational gain.
 ### D-037: Query planner is a bounded hybrid of per-target-title exact
 queries and one grouped fallback, not a single broad OR or one query per
 configured phrase
+**Superseded in part by D-041**: the `SourceQueryCapabilities` model this
+ADR introduces was replaced by the broader `SourceCapabilities` model
+(same `exact_phrase_search`/`keyword_search` fields, renamed, plus twelve
+more capability signals) — see D-041. The query-planning *design* described
+below (bounded hybrid, per-title exact queries, capped grouped fallback) is
+otherwise unchanged and still current.
 **Decision**: `MILESTONE_2.md`'s query-planning design builds one
 exact-phrase `PlannedQuery` per `SearchProfile.target_titles` entry (capped
 by a new `max_queries_per_source_country` execution limit, profile order
@@ -1081,6 +1087,10 @@ unjustified abstraction CLAUDE.md hard constraint 9 and `architecture.md`
 
 ### D-039: Sponsor-register enrichment is import-only (UK, NL); no live
 government-register downloading, no fuzzy name matching, in Milestone 2
+**Refined by D-042**: UK and NL are no longer treated as equally mandatory —
+UK is mandatory for M2, NL is optional/stretch and must not block
+completion. The import-only/no-live-download/no-fuzzy-matching decisions
+below are otherwise unchanged and still current.
 **Decision**: `MILESTONE_2.md` Workstream D designs `job-scout sponsors
 import <file> --country <CC> --register <name>` to parse a
 user-already-downloaded register snapshot (UK Home Office licensed-sponsor
@@ -1111,3 +1121,381 @@ supplied artifact, never guess. Registry-match confidence is deliberately
 capped below "confirmed" in the evidence-precedence design (`MILESTONE_2.md`
 "Sponsorship/visa enrichment design") specifically because exact-name
 matching alone cannot rule out a subsidiary/trading-name collision.
+
+---
+
+## Milestone 2 — Planning refinement pass (2026-08-08)
+
+The ADRs below record a second planning pass over `MILESTONE_2.md`/
+`ROADMAP.md`, still before any Milestone 2 code changed. This pass refines
+five things the user explicitly approved: the canonical normalized job
+model, source capability metadata, sponsor-provider scope, the evaluation
+dataset design, and a set of previously-open M2 decisions. No application
+code was modified; the M1/1.1 baseline was not re-run (no code changed to
+re-run it against).
+
+### D-040: `Job` is already the canonical normalized job model every adapter
+must emit; no new `NormalizedJob` model
+**Decision**: Confirmed by auditing the current codebase (not by design
+intent alone) that `Job` (`models.py`, architecture.md §2.4) already is the
+single canonical, normalized representation every source's data passes
+through before reaching the generic pipeline. `RawJobRecord`'s own docstring
+already states the boundary explicitly — "Source-native shape,
+pre-normalisation. Adapters return this, never Job." — and `pipeline.py`
+already implements exactly the rule this ADR formalises:
+`normalize_adzuna_record(RawJobRecord) -> Job` is the only function that
+reads `RawJobRecord.raw_payload`, and it is looked up through a plain dict,
+`_NORMALIZERS: dict[str, Callable[[RawJobRecord], Job]]`, keyed by
+`source_id` — every stage downstream of that one lookup (deduplication, hard
+filters, pre-filter, Stage 5 scoring, visa assessment, persistence) operates
+purely on `Job`/`MatchResult`/`VisaAssessment` and contains zero
+`source_id`-conditional branching anywhere. **Source adapters normalize
+external records into `Job`** — no new model is introduced for Milestone 2;
+a second model would duplicate `Job` for no representational gain and
+contradict CLAUDE.md hard constraint 9 (no unjustified new abstraction).
+**Architectural rule (formalised, not new)**: `External source payload ->
+source-specific adapter -> Job (canonical normalized model) -> generic
+pipeline`. Concretely:
+- Every `SourceAdapter.fetch()` implementation (Adzuna today; Reed/
+  Greenhouse/Lever in M2) returns `list[RawJobRecord]` only — the
+  source-native payload, untouched, per `architecture.md` §3's existing
+  contract.
+- Exactly one normalizer function per source (`normalize_reed_record`,
+  `normalize_greenhouse_record`, `normalize_lever_record`, mirroring
+  `normalize_adzuna_record`'s existing shape and location) converts
+  `RawJobRecord -> Job`. M2 keeps normalizers colocated in `pipeline.py`
+  next to `_NORMALIZERS`, matching the established M1 pattern, rather than
+  moving them into each `sources/*.py` module — a location change with no
+  behavioural benefit, and not what this task asked for.
+- `_NORMALIZERS` grows by three entries (dict data, not new `if`/`elif`
+  branches) — the single place in the whole codebase where a `source_id`
+  string selects source-specific behaviour for normalization. This is the
+  one, intentionally narrow "branch point" the architecture allows; every
+  other stage must keep operating on `Job` alone.
+- No stage after normalization — `deduplication.py`,
+  `matching/hard_filters.py`, `matching/prefilter.py`, `matching/scoring.py`,
+  `matching/visa.py` (new in M2), `repository/sqlite_repo.py` — may read
+  `source_id` to change *how* it evaluates a job (it may of course *record*
+  `source_id` as data, e.g. in `SourceProvenance`/`ScoreComponent` evidence,
+  which is not branching).
+**Required normalization fields** (every M2 normalizer must populate the
+same fields `normalize_adzuna_record` already does, degrading to
+`None`/empty/`RemoteType.UNKNOWN` rather than fabricating a value when a
+source doesn't provide the underlying data — never a per-source special case
+downstream): `job_id` (fresh UUID4), `external_ids` (one
+`SourceExternalId`), `title`, `normalized_title`/`normalized_company` (via
+the shared `compute_fingerprint`, never hand-rolled per adapter), `company`,
+`location`, `remote_type` (inferred from description text via the existing
+shared `_guess_remote_type`, not a per-source heuristic), `employment_type`
+(`None` if the source doesn't expose one), `description_raw`/
+`description_text` (HTML-stripped via the shared `strip_html`), `posted_at`
+(`None` if unparseable/absent — never guessed), `collected_at`
+(`datetime.now(UTC)` at normalization time), `salary_min`/`salary_max`/
+`salary_currency` (`None` when the source's payload has no salary field —
+see D-041's `salary_data` capability, which documents this rather than
+working around it), `source_provenance` (one `SourceProvenance` entry,
+`access_mode` read from the adapter's own declared `access_mode`, never
+hard-coded per call site), `fingerprint` (`compute_fingerprint`, shared,
+unchanged), `role_family_hints` (`[]` — Stage 2 populates this later, no
+normalizer sets it directly today).
+**Source provenance**: unchanged from Workstream F's existing conclusion
+(D-038) — every normalizer constructs exactly one `SourceProvenance` row per
+fetched record, `merge_provenance` already appends rather than overwrites on
+repeat/cross-source fetches, and `JobRepository.list_provenance()` (new in
+M2) is the read path. Nothing about D-040 changes that.
+**Alternatives**: A new `NormalizedJob` model distinct from `Job`, kept
+adapter-boundary-only and mapped into `Job` at a later pipeline stage
+(rejected — audited `Job` itself and found no persistence- or
+matching-only concern baked into it that would make it unsuitable as the
+adapter boundary; every field on `Job` is either raw normalized data or a
+value every stage after normalization already needs, so a second model
+would be a pure pass-through with no field it owns that `Job` doesn't
+already carry); moving normalizer functions into each `sources/*.py` module
+(considered — arguably tidier ownership, but a real location change to
+already-implemented M1 code for a stylistic reason only, not requested by
+this task and not required to satisfy the architectural rule, since the
+dict-dispatch boundary already fully contains the "branch point" regardless
+of which file the function bodies live in).
+**Why**: This is exactly the audit the task asked for — check whether `Job`
+already serves the canonical-normalized-model purpose before inventing a
+new one. It does, and the evidence is the existing code, not just intent:
+the docstring, the dict-dispatch pattern, and the absence of any
+`source_id` check anywhere in `matching/`, `deduplication.py`, or
+`repository/sqlite_repo.py`. CLAUDE.md hard constraint 9 (no unjustified new
+abstraction) applies directly: formalise the rule, don't add a redundant
+model.
+
+### D-041: A single `SourceCapabilities` model, not scattered booleans,
+added to `SourceRegistryEntry`; consolidates and supersedes the draft
+`SourceQueryCapabilities`
+**Decision**: `MILESTONE_2.md`'s pre-existing draft (D-037) added a narrow
+`SourceQueryCapabilities` (four fields: `supports_exact_phrase`,
+`supports_or_terms`, `supports_industry_filter`,
+`max_recommended_queries_per_request`) to answer only the query-planner's
+needs. This ADR replaces it with a broader `SourceCapabilities` model
+(still nested on `SourceRegistryEntry`, still one typed object, not many
+top-level booleans) covering every capability signal M2's design actually
+needs across query construction, filtering, result-shape, and dedup — not
+just query mode selection: `keyword_search`, `exact_phrase_search`,
+`location_filter`, `country_filter`, `city_filter`, `industry_filter`,
+`company_filter`, `remote_filter`, `salary_data`, `structured_description`,
+`pagination`, `page_size_control`, `posting_date_filter`,
+`stable_external_job_id`, `canonical_application_url` (all `bool`), plus
+`max_recommended_queries_per_request: int | None` carried over unchanged
+from the draft it replaces. **`authentication_required` is deliberately not
+added** — `SourceRegistryEntry.auth_required: bool` (architecture.md §2.7)
+already means exactly this; adding a second field would create two sources
+of truth for the same fact.
+`SourceRegistryEntry.capabilities: SourceCapabilities = SourceCapabilities()`
+defaults to Adzuna's actual documented behaviour (per D-016/D-031's
+already-verified contract: `keyword_search=True`, `exact_phrase_search=True`,
+`location_filter=True`, `country_filter=True`, `city_filter=True`,
+`industry_filter=False`, `company_filter=False`, `remote_filter=False`,
+`salary_data=True`, `structured_description=False`, `pagination=True`,
+`page_size_control=True`, `posting_date_filter=False`,
+`stable_external_job_id=True`, `canonical_application_url=True`) so every
+existing registry entry — which has no `capabilities` key today — keeps
+validating and behaving unchanged.
+**How the query planner consumes it**: `exact_phrase_search`/
+`keyword_search` gate `PlannedQuery.mode` selection exactly as
+`SourceQueryCapabilities.supports_exact_phrase`/`supports_or_terms` were
+already designed to (D-037) — no behaviour change there, just a
+renamed/relocated field. `company_filter=True` (Greenhouse/Lever's actual
+shape — one fetch is implicitly scoped to one watchlisted company) tells the
+planner to skip keyword-`PlannedQuery` generation entirely for that source
+and rely on `CompanyWatchlistEntry` fan-out instead, making the
+already-designed "Greenhouse/Lever don't use keyword queries at all"
+behaviour data-driven (read from the registry) rather than an unstated
+adapter-specific assumption. `industry_filter` gates whether an
+industry/sector term is folded into a query's OR terms or silently dropped
+for that source.
+**How unsupported filters/fields are handled**: never a special case
+downstream — a source with `salary_data=False` simply normalizes
+`salary_min`/`salary_max`/`salary_currency` to `None` (per D-040's
+normalization-field rule), and any code that conditionally uses salary (e.g.
+the new dedup Tier 2 salary-corroboration signal, D-038) already treats
+"both sources report salary" as a precondition, so a `None` simply means
+that corroborating signal doesn't fire — no `if source_id == ...` anywhere.
+The same pattern applies to every other capability: absence means "this
+signal is unavailable for this source," never an error and never a
+fabricated value.
+**How `job-scout plan` exposes this**: extends the already-planned
+`planned_queries`/`estimated_request_count` output (D-037) to show, per
+selected source, which capability determined each query's mode (e.g.
+`exact_phrase_search: unsupported -> degraded to any_of_words for "Chief of
+Staff"`), and the new `job-scout sources` command (`MILESTONE_2.md` CLI
+changes, registry-only view) lists each entry's full `capabilities` block —
+this is the natural home for capability inspection since it already exists
+to show registry/credential state independent of a chosen profile.
+**Real consumption points wired into M2 logic** (the rest are recorded as
+data for now, deliberately not wired into scoring/matching logic this
+milestone — see below): `canonical_application_url=True` is a precondition
+for a source to participate in the new cross-source exact-URL dedup tier
+(D-038) — a source without a stable canonical URL must not be compared on
+URL alone, since its URLs could be session-scoped or otherwise
+non-canonical, and a false match there would silently merge two distinct
+jobs.
+**Deliberately not wired into any scoring/dedup logic this milestone**:
+`stable_external_job_id=False` and `structured_description=False` are
+recorded (so `job-scout sources`/a future `job-scout evaluate` pass can see
+them) but do not change Tier 1 fingerprinting confidence or Jaccard-dedup
+thresholds in M2 — doing so would be a new, untested scoring dimension
+outside this milestone's own acceptance criteria. Left as an explicit
+forward-looking signal for a later milestone, not a gap.
+**Alternatives**: Many scattered top-level booleans directly on
+`SourceRegistryEntry` (rejected — the task's own instruction prefers one
+typed object, and sixteen more top-level fields would make an already-large
+model harder to read); keeping `SourceQueryCapabilities` as a second,
+narrower model alongside the new broader one (rejected — two overlapping
+capability models on the same entry is exactly the kind of
+duplicated-source-of-truth risk this ADR is trying to avoid, since
+`exact_phrase_search`/`supports_exact_phrase` would mean the same thing in
+two places); adding `authentication_required` for symmetry with the task's
+suggested field list (rejected — direct duplicate of the already-existing
+`auth_required`, see above).
+**Why**: Matches the task's explicit preference for one typed capability
+object, keeps every new signal config-driven (`SourceRegistryEntry`,
+YAML-editable, per CLAUDE.md hard constraint 6/10), and avoids inventing a
+new scoring/dedup behaviour this milestone doesn't need — the two fields M2
+actually branches on (`exact_phrase_search`/`keyword_search` for query
+mode, `company_filter` for query-vs-watchlist fetch strategy,
+`canonical_application_url` for dedup-tier eligibility) get concrete
+wiring; the rest are honest, inspectable metadata that costs nothing to
+record now and saves a schema change later.
+
+### D-042: UK licensed-sponsor register is mandatory for Milestone 2; the
+Netherlands recognised-sponsors register is optional/stretch and must not
+block M2 completion
+**Decision**: Refines D-039 (which scoped sponsor-register enrichment as
+"import-only, UK and NL, no live download, no fuzzy matching" without
+ranking the two countries against each other). For M2, mandatory scope is:
+the generic sponsor-registry import framework (`job-scout sponsors import`,
+`SponsorRegistryEntry` persistence — country/register-agnostic, a plain
+CSV-parsing function per register, not a plugin/loader mechanism per
+CLAUDE.md hard constraint 9), the UK Home Office licensed-sponsor register
+provider/parser specifically, deterministic employer-name normalization
+(reusing `deduplication.normalize_company`, unchanged from D-039), full
+evidence provenance (`SponsorRegistryMatch`/
+`VisaAssessment.employer_registry_match*`/`registry_source`), and its
+integration into `assess_visa()`'s evidence precedence (`MILESTONE_2.md`
+"Evidence precedence"). The Netherlands IND recognised-sponsors provider
+stays in the design (kept, not deleted — the "Sponsor registers" section of
+`MILESTONE_2.md` still documents it) but is explicitly optional/stretch: M2
+is complete without it, and it must not block the milestone's Definition of
+Done if any of the following hold at implementation time — (a) the IND
+register's published file format proves difficult to parse reliably (e.g.
+an unstable or undocumented column layout), (b) authoritative access to a
+current snapshot cannot be verified the same way D-016/D-027/D-028/D-031
+required for other source contracts, (c) the register's schema changes
+materially from what this planning pass assumed, or (d) implementing it
+would expand M2's scope disproportionately to its value (e.g. requiring new
+normalization logic beyond what the UK provider already established). No
+live government-register downloading for either country is authorized in
+M2 regardless of this refinement — unchanged from D-039 — and would require
+separate, explicit user approval in a future milestone.
+**Alternatives**: Treat UK and NL as equally mandatory, as D-039's original
+framing implied (rejected — the task explicitly asks for a mandatory/
+optional split, and a two-country mandatory bar is a real completion risk
+if the Dutch register's format turns out to be harder to parse reliably
+than the UK one, which this planning pass has not yet verified to the same
+evidence bar D-016 established for Adzuna); drop the Netherlands provider
+from the design entirely now that it's optional (rejected — explicit
+instruction to keep it as a design proving the import framework generalizes
+beyond one country, just not required for completion).
+**Why**: Matches the task's explicit instruction and this project's
+existing evidence discipline (D-016/D-027/D-028/D-031: don't commit to a
+source contract before it's actually verified) — the UK register's
+CSV/ODS shape is well-documented and publicly stable; the Dutch register's
+has not yet been evaluated to the same bar during this planning pass, so
+gating M2 completion on it would repeat the mistake those ADRs already
+declined to make. Keeping the NL design (not deleting it) preserves the
+"the import framework is register-agnostic, UK is just the first concrete
+instance" property the mandatory framework requirement is there to prove.
+
+### D-043: Evaluation dataset expanded to five label categories across
+multiple professions, including a profession-agnostic "deceptive false
+positive" category; metric set expanded accordingly
+**Decision**: `EvaluationLabel` (`MILESTONE_2.md` domain-model changes,
+Workstream E) changes from four values (`strong_match | adjacent_match |
+weak_match | reject`) to five: `strong_match | adjacent_match | weak_match |
+hard_filter_reject | deceptive_false_positive`. `reject` is renamed
+`hard_filter_reject` for clarity (a fixture a real Stage 1 hard filter
+should reject — visa/location/citizenship, etc.) and does not change
+meaning otherwise. `deceptive_false_positive` is new: a fixture that
+plausibly *looks* like a match on shallow keyword overlap (shares a generic
+word with a configured title/skill) but a human reviewer would not consider
+it the same role family — the exact class of near-miss this project's own
+live-run audits have already found in practice (D-029/D-032/D-033/D-034's
+"Data Business Analyst" vs. "Strategy Manager"-shaped confusions). This is a
+distinct failure mode from `weak_match` (a genuinely weaker but still real
+match) and from `hard_filter_reject` (fails an explicit hard-eligibility
+rule) — a deceptive false positive typically *passes* Stage 1 and often
+Stage 2, and only a human label (or, going forward, this evaluation tool)
+can catch it. `EvaluationJobFixture`'s shape is unchanged (`job_id, title,
+description, company, location, employment_type, posted_at, label,
+rationale`) — `rationale` is exactly where a labeller explains *why* a
+`deceptive_false_positive` fixture is deceptive, which doubles as
+documentation for whoever maintains the fixture set later.
+The labelled fixture set (`tests/fixtures/evaluation/`) must span
+**multiple professions**, not only the shipped example profile's
+strategy/transformation/chief-of-staff domain — at minimum one additional
+fixture group shaped like a different profession (e.g. a nursing-,
+software-engineering-, or sales-shaped group), each with all five labels
+represented. Concrete deceptive-false-positive *pattern examples* the task
+named (Business Analyst vs. Data Analyst vs. HR Analyst; Software Engineer
+vs. Sales Engineer; Registered Nurse vs. Nurse Recruiter; Mechanical
+Engineer vs. Sales Engineer; Strategy Analyst vs. Investment Analyst;
+Product Manager vs. Product Marketing Manager) are illustrative guidance for
+authoring the fixture set — they live only in `tests/fixtures/evaluation/`
+test data and `MILESTONE_2.md`'s own prose, never as a hard-coded list in
+`src/job_scout/` (CLAUDE.md hard constraint 10 — the matching engine itself
+must stay profession-agnostic; only the *test fixtures* get
+profession-specific, and only to prove the scoring engine handles them
+without profession-specific code).
+Metrics reported by `job-scout evaluate` expand from `precision@10/@20,
+recall of labelled strong matches, false-positive rate, tier-vs-label
+cross-tab` to: **precision@5**, precision@10, precision@20 (precision@k =
+fraction of the top-k ranked fixtures, by `final_score`, whose label is
+`strong_match` or `adjacent_match`), **recall of labelled strong matches**
+(unchanged), **false-positive rate** (fraction of
+`deceptive_false_positive`-labelled fixtures that land in `priority`/
+`digest` tiers — this is the metric that directly measures whether the
+milestone's namesake risk is actually caught), **hard-filter correctness**
+(fraction of `hard_filter_reject`-labelled fixtures Stage 1 actually rejects
+— a direct pass/fail count against `HardFilterResult.passed`, distinct from
+the score-based metrics), **ranking inversions** (count of labelled-fixture
+pairs where a lower-ranked label scores a strictly higher `final_score`
+than a higher-ranked label, e.g. any `deceptive_false_positive` outscoring
+any `strong_match` — directly generalises the ranking-order regressions
+D-032/D-033/D-034 found and fixed by hand, into a repeatable, automated
+check), and **threshold-tier distribution** (count of labelled fixtures
+landing in each `notification_tier`, cross-tabbed by label — supersedes/
+renames the earlier "tier-vs-label cross-tab" language, same underlying
+computation).
+`final_score`/`ScoreComponent.raw_value`/`weighted_value` continue to be
+documented and printed as **relevance scores** — a deterministic, weighted-
+sum ranking signal — never as a probability or confidence percentage;
+`job-scout evaluate`'s own output and any future documentation must not
+describe them as "probability of being a match."
+**Alternatives**: Folding "deceptive false positive" into the existing
+`weak_match` label (rejected — a weak-but-real match and a plausible-but-
+wrong match need different remediation: a weak match is a
+scoring-sensitivity question, a deceptive false positive is a
+precision/false-positive-rate question, and conflating them would blunt
+exactly the metric — false-positive rate — this expansion exists to add); a
+single combined strategy-only fixture set with inline comments noting
+"imagine this were a different profession" (rejected — doesn't actually
+exercise the profession-agnostic matching code against different
+vocabulary, which is the whole point of requiring multiple real
+profession-shaped fixture groups).
+**Why**: Directly matches the task's explicit instruction, and closes a
+real gap this project's own history exposes — every deceptive-false-
+positive-shaped bug found in Milestone 1/1.1 (D-029, D-032 through D-034)
+was caught by manual live-run inspection, not by a repeatable tool.
+`job-scout evaluate` existed already to calibrate thresholds (Workstream E);
+expanding its label/metric set to explicitly target this exact failure mode
+turns "we happened to notice this in a live run" into "the evaluation tool
+would have caught this automatically," which is the tool's actual purpose
+per `MILESTONE_2.md`'s own stated goal.
+
+### D-044: Milestone 2 open-scope questions confirmed approved by the user
+(2026-08-08); adapter set fixed at exactly three (Reed, Greenhouse, Lever)
+**Decision**: The following M2 scope questions — previously stated as
+decisions in earlier ADRs but in some cases still phrased with residual
+ambiguity or flagged as "open decisions for the user" in `MILESTONE_2.md`'s
+own preparation report — are confirmed **approved**, not open, as of this
+planning refinement pass:
+1. **Email-alert ingestion** stays re-sequenced to Milestone 3 (D-035) —
+   confirmed, unchanged.
+2. **The general, automatic source-discovery workflow** stays re-sequenced
+   to Milestone 3 (D-035) — confirmed, unchanged.
+3. **M2's adapter set is fixed at exactly three: Reed, Greenhouse, and
+   Lever**, in addition to the existing Adzuna adapter — this replaces the
+   earlier "two to three new... adapters" phrasing (`MILESTONE_2.md` "In
+   scope", and the Deliverable 5/acceptance-criteria wording that only
+   required "Reed + one of Greenhouse/Lever, minimum"). All three are in
+   scope; none is optional. `MILESTONE_2.md`'s acceptance criteria and
+   Deliverable 5 are updated accordingly (see the implementation-sequence
+   update accompanying this ADR).
+4. **`VisaAssessment`/`VisaStatus` keep their existing six-value-enum
+   shape** (D-036) — confirmed, unchanged, unless a concrete M2
+   implementation finding proves it insufficient (in which case a new ADR
+   would document that finding before any schema change, per this
+   project's existing discipline).
+5. **UK sponsor-register provider is mandatory; Netherlands is
+   optional/stretch** (D-042) — confirmed.
+6. **No notification delivery and no scheduler in M2** (already stated in
+   `MILESTONE_2.md`'s "Explicitly out of scope") — confirmed, unchanged.
+**Alternatives**: Leave these as they were — some already effectively
+decided in prose but never formally marked closed, one (the adapter count)
+genuinely ambiguous between "2" and "3" depending which part of the
+document was read. Leaving ambiguity here risks a real implementation-time
+scope question re-litigating a decision the user has already made.
+**Why**: The task explicitly asked for these to be recorded as approved
+decisions in `decisions.md`, not left as open questions the next session
+would need to re-ask the user about. Fixing the adapter count at exactly
+three (rather than "2 to 3") removes a genuine, previously-unresolved
+ambiguity between `MILESTONE_2.md`'s "In scope" prose and its own
+acceptance criteria, which — if left inconsistent — would have let an
+implementation pass legitimately claim done-ness after building only two
+adapters.

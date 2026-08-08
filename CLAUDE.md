@@ -11,9 +11,12 @@ experience. The originally-built example profile (international
 strategy/transformation/chief-of-staff/program-management roles) is one
 configuration of the engine, not the engine's scope — see `decisions.md`
 D-017. Read `architecture.md` first — it is the design contract.
-`MILESTONE_1.md` and `MILESTONE_1_1.md` define current scope; `decisions.md`
-explains why non-obvious choices were made; `ROADMAP.md` shows what comes
-after and, just as importantly, what doesn't happen yet.
+`MILESTONE_1.md` and `MILESTONE_1_1.md` describe what's implemented and
+released; `MILESTONE_2.md` defines the active milestone's scope (defined and
+refined, not yet implemented — see "Milestone 2 status and implementation
+discipline" below); `decisions.md` explains why non-obvious choices were
+made; `ROADMAP.md` shows what comes after and, just as importantly, what
+doesn't happen yet.
 
 ## Hard constraints — do not violate these
 
@@ -38,12 +41,15 @@ after and, just as importantly, what doesn't happen yet.
 6. **Don't hard-code a single global source list.** Source selection goes
    through the registry + planner; a role/region should never silently assume
    one fixed set of sources.
-7. **Stay within the current milestone.** Check `MILESTONE_1.md`'s and
-   `MILESTONE_1_1.md`'s "in scope" / "explicitly out of scope" lists before
-   adding anything — this project has a documented tendency to over-scope
-   (see the original requirements' own regional-source breadth), and the
-   milestone boundary is intentional. Don't start Milestone 2+ work without
-   the user explicitly asking.
+7. **Stay within the current milestone.** Check `MILESTONE_1.md`'s,
+   `MILESTONE_1_1.md`'s, and `MILESTONE_2.md`'s "in scope" / "explicitly out
+   of scope" lists before adding anything — this project has a documented
+   tendency to over-scope (see the original requirements' own
+   regional-source breadth), and the milestone boundary is intentional.
+   `MILESTONE_2.md`'s scope being defined and refined is not the same as
+   Milestone 2 being authorized to implement — don't write Milestone 2 code,
+   and don't start Milestone 3+ work, without the user explicitly asking.
+   See "Milestone 2 status and implementation discipline" below.
 8. **Never put real personal data into a tracked file.** The packaged
    templates under `src/job_scout/resources/templates/` (and, historically,
    `config/*.example.yaml` — see `decisions.md` D-021) must stay generic
@@ -107,6 +113,34 @@ corrections found along the way; Milestone 1.1 is complete — see
 including `paths.py` (`AppPaths`), `resources/` (packaged templates), and
 `bootstrap.py` (`job-scout init`)).
 
-## Before implementing beyond Milestone 1.1
+## Milestone 2 status and implementation discipline
+
+Milestone 2 is the **active milestone** — its scope is defined and refined
+(`MILESTONE_2.md`, `decisions.md` D-035 through D-044) but **not yet
+implemented**. Nothing above changes because M2 exists: constraints 1–10
+apply to M2 exactly as they applied to M1/1.1.
+
+- Do not begin Milestone 2 implementation until the user explicitly asks.
+  Being in this section of CLAUDE.md is not that ask.
+- When implementation is authorized, proceed **task-by-task** through
+  `MILESTONE_2.md` Deliverable 5's twelve-step sequence, in order (steps
+  without a dependency on each other may run in parallel — see each step's
+  stated dependencies) — not as one large, unreviewable change.
+- Do not start Milestone 3+ work (email-alert ingestion, automatic
+  source-discovery, semantic/embedding matching, notification delivery,
+  scheduling) under cover of an M2 task. See `ROADMAP.md`.
+- No source becomes `approved`/executable without the same compliance-gate
+  discipline hard constraint 1 already requires — every new M2 adapter
+  (Reed, Greenhouse, Lever) ships `manual_review` by default; a user
+  promotes an entry in their own registry only after confirming current
+  terms themselves.
+- No notification delivery and no scheduler in Milestone 2 — both stay
+  Milestone 5/6 territory (`ROADMAP.md`).
+- Deterministic matching stays the core of M2. `job-scout evaluate`
+  measures relevance-score ranking quality against a labelled fixture
+  dataset; it does not add LLM/embedding scoring, and it does not by itself
+  change `notification_thresholds`.
+
+## Before implementing beyond Milestone 2
 
 Don't. Check `ROADMAP.md` and ask the user first.

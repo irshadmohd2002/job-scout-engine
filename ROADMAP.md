@@ -21,17 +21,25 @@ committed, and released as `v0.1.0`. A subsequent round of matching-quality
 fixes (`decisions.md` D-028 through D-034) landed on top of that release
 without changing either milestone's acceptance criteria.
 
-## Milestone 2 — Multi-source discovery & sponsorship intelligence (scope defined, not started)
-See `MILESTONE_2.md` for the full scope contract. Query-planning quality
-(`SearchProfile`-driven retrieval instead of a single candidate-history
-OR-query), two to three new compliant adapters (Reed, Greenhouse, Lever —
-watchlist-backed where applicable), cross-source deduplication beyond
-single-source fingerprinting, and real `VisaAssessment` construction with
-optional UK/NL sponsor-register corroboration. Still local, single-user,
-synchronous, deterministic — no notification delivery, no scheduler. This
-supersedes the previous draft of this section (see below); do not begin
-implementation without the user explicitly asking, per this project's
-ground rules.
+## Milestone 2 — Multi-source discovery & sponsorship intelligence (scope refined, not started)
+See `MILESTONE_2.md` for the full scope contract, refined 2026-08-08
+(`decisions.md` D-040 through D-044). A formalised canonical-normalization
+boundary (`Job` confirmed as the model every adapter normalizes into) and a
+typed `SourceCapabilities` model underpin the rest of the milestone.
+Query-planning quality (`SearchProfile`-driven retrieval instead of a single
+candidate-history OR-query), **exactly three** new compliant adapters —
+Reed, Greenhouse, and Lever, all mandatory — watchlist-backed where
+applicable, cross-source deduplication beyond single-source fingerprinting,
+and real `VisaAssessment` construction with mandatory UK sponsor-register
+corroboration (a Netherlands provider is designed but optional/stretch,
+non-blocking). A multi-profession, five-label evaluation dataset (including
+a `deceptive_false_positive` category) backs the `job-scout evaluate`
+calibration tool. Still local, single-user, synchronous, deterministic — no
+notification delivery, no scheduler. This supersedes the previous draft of
+this section (see below); do not begin implementation without the user
+explicitly asking, per this project's ground rules — implementation, when
+authorized, proceeds task-by-task through `MILESTONE_2.md` Deliverable 5's
+twelve-step sequence, not all at once.
 
 **Superseded from the original M2 draft** (see `decisions.md` D-035 for the
 full reasoning):
