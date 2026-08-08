@@ -424,6 +424,7 @@ def load_source_scoring_weights(
 class EnvConfig(BaseModel):
     adzuna_app_id: str | None = None
     adzuna_app_key: str | None = None
+    reed_api_key: str | None = None
     anthropic_api_key: str | None = None
     anthropic_model: str | None = None
     db_path: str = "./data/job_scout.sqlite3"
@@ -462,6 +463,7 @@ def load_env(path: Path | None = None, *, data_dir: Path | None = None) -> EnvCo
     return EnvConfig(
         adzuna_app_id=os.environ.get("ADZUNA_APP_ID") or None,
         adzuna_app_key=os.environ.get("ADZUNA_APP_KEY") or None,
+        reed_api_key=os.environ.get("REED_API_KEY") or None,
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
         anthropic_model=os.environ.get("ANTHROPIC_MODEL") or None,
         db_path=os.environ.get("JOB_SCOUT_DB_PATH") or str(app_paths.database_path),

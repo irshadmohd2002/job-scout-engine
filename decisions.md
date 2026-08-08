@@ -1617,3 +1617,144 @@ adapter-agnostic, translation happens inside the adapter) intact while
 finally giving `exact_phrase`/`any_of_words` distinguishable real requests,
 and the `what` semantics claim is calibrated to exactly what the available
 evidence supports, consistent with this project's established evidence bar.
+
+### D-046: `ReedAdapter` (Milestone 2 Deliverable 5 step 5) — Search API
+only, no Details API; explicit `SourceCapabilities` derived from the
+official docs' own prose "Returns" tables (no literal JSON example
+published); `_effective_config_status`/`_default_adapter_factory` extended
+by the smallest safe if/elif addition, not a generic mechanism
+**Decision**: `sources/reed.py::ReedAdapter` implements Reed's documented
+Jobseeker API (`https://www.reed.co.uk/developers/jobseeker`, verified at
+implementation time), following `AdzunaAdapter`'s exact structural shape
+(pure HTTP-in/`RawJobRecord`-out, `is_configured()`, typed exceptions,
+per-country loop). Several implementation questions the frozen
+`MILESTONE_2.md` task description left to be resolved against the verified
+API:
+1. **Search endpoint only (`GET /api/1.0/search`); the Details endpoint
+   (`GET /api/1.0/jobs/{jobId}`) is not called.** The Details endpoint
+   exposes richer fields (contract type, job type, expiration date, an
+   external application URL, and a reed.co.uk listing URL) that the Search
+   endpoint's response does not include, but calling it once per search
+   result would add an unbounded per-result HTTP fan-out that neither
+   `ExecutionLimits` nor `SelectedSource.estimated_request_count` (Task 3/4)
+   account for. Deferred, not implemented, per the task's own explicit
+   preference for the Search-response-only shape when it satisfies the
+   `RawJobRecord`/`Job` contract — which it does, once every field this
+   adapter can't provide degrades to `None`/absent rather than being
+   fabricated (point 3 below).
+2. **HTTP Basic Auth via `httpx.BasicAuth(api_key, "")`**, passed per
+   request (not baked into a client-level default), so the mechanism stays
+   visible and testable at the same call site as every other request
+   detail; the API key never appears in the URL, in a query parameter, or
+   in any raised exception message (mirrors `AdzunaAdapter`'s existing
+   "context string, never the query dict" convention).
+3. **Response field-name mapping is a documented, best-effort inference,
+   not a literally-quoted contract** — a genuine gap in Reed's own
+   published docs, not a shortcut taken here. The docs page's "Returns"
+   sections for both endpoints list only human-readable row labels (`Job
+   Id`, `Employer Name`, `Job Title`, `Description`, `Location Name`,
+   `Minimum Salary`, `Maximum Salary`, …) inside a parameters/returns table
+   — no literal JSON response example or field-casing sample is published
+   anywhere on the page (confirmed by three separate targeted fetches at
+   implementation time, including one that asked explicitly for verbatim
+   table cell text). `ReedAdapter`/`normalize_reed_record` therefore use
+   this project's direct camelCase translation of those documented labels
+   (`jobId`, `employerId`, `employerName`, `employerProfileId`, `jobTitle`,
+   `description`, `locationName`, `minimumSalary`, `maximumSalary`) —
+   standard REST/JSON convention, not a fabricated guess from nothing, but
+   explicitly flagged (in `sources/reed.py`'s module docstring and the
+   Task 5 final report) as needing live confirmation via the new opt-in
+   `tests/test_reed_integration.py` before a real run is relied on. Every
+   field read from the payload uses `.get()` (never a bare index) except
+   the required identity field `jobId`, which uses `item["jobId"]` and
+   therefore raises uncaught on a malformed record — the same
+   "required-field KeyError propagates, optional fields degrade cleanly"
+   philosophy `AdzunaAdapter._to_raw_record`'s `item["id"]` already
+   establishes, not a new error-handling policy.
+4. **Explicit `SourceCapabilities` derived field-by-field from the verified
+   docs, deliberately not the Adzuna-shaped default**: `keyword_search=True`
+   (`keywords` param documented); `exact_phrase_search=False` (`keywords` is
+   a single generic term parameter with no documented literal-phrase/quote
+   syntax — per D-041's own warning against overclaiming, and per this
+   task's explicit instruction not to fabricate phrase semantics);
+   `location_filter=True`/`city_filter=True` (`locationName` is a
+   documented free-text location parameter — the same
+   one-parameter-covers-city-and-location precedent already accepted for
+   `adzuna_api`'s undocumented `where`-equivalent, D-016/D-031);
+   `country_filter=False` (Reed's Search API has **no** country-scoping
+   request parameter at all — it is inherently a single UK-wide job board,
+   unlike Adzuna's per-country endpoint path; geographic coverage is a
+   registry/planner concept, never conflated here with an API-side filter,
+   per this task's explicit instruction to keep the two distinct);
+   `industry_filter=False`/`remote_filter=False`/`posting_date_filter=False`
+   (no such parameters documented — never invented); **`company_filter=False`
+   even though `employerId`/`employerProfileId` are real, documented
+   parameters** — per D-041's explicit warning, `company_filter=True` means
+   a watchlist-scoped fetch model that suppresses keyword-`PlannedQuery`
+   generation entirely (Greenhouse/Lever's actual shape), and Reed is
+   deliberately kept a normal keyword-search source, not reclassified into
+   that shape merely because an employer-id parameter exists;
+   `salary_data=True` (`minimumSalary`/`maximumSalary` are genuinely part of
+   the Search endpoint's own documented Returns, not Details-only);
+   `structured_description=False` (the Search response's description is a
+   single freeform text field, the same "not structured" classification
+   already given to Adzuna's own truncated-snippet description);
+   `pagination=True`/`page_size_control=True` (`resultsToTake`/
+   `resultsToSkip` are real, documented offset-pagination parameters, capped
+   at Reed's own documented 100-result maximum —
+   `sources/reed.py::MAX_RESULTS_TO_TAKE`); `stable_external_job_id=True`
+   (`jobId` is a stable per-listing identifier, same convention as Adzuna's
+   `id`); **`canonical_application_url=False`** — the Search response
+   documents no application/job URL field at all (only the unused Details
+   endpoint does, per point 1), so this adapter's `RawJobRecord.raw_url` is
+   always `""`; per this task's explicit instruction, this capability
+   reflects what the adapter's *chosen acquisition endpoint* actually
+   provides, not a hypothetical "Reed has URLs somewhere" claim — no URL
+   format is fabricated or derived from a job ID;
+   `max_recommended_queries_per_request=None` (no Reed-specific request-count
+   limit is documented; not invented).
+5. **`_effective_config_status` (`source_intelligence/planner.py`) and
+   `_default_adapter_factory` (`pipeline.py`) both gained one narrow
+   `elif entry.source_id == "reed_api"` / `if source_id == "reed_api"`
+   branch each, mirroring the existing `adzuna_api` branch exactly** —
+   not a generalised per-adapter credential-mapping/registration mechanism.
+   `_effective_config_status`'s own docstring already documented this as the
+   deliberate scope boundary ("every other source_id's effective status is
+   its declared status until it gets its own adapter and a matching
+   credential rule here"); generalising it into a table/registry keyed by
+   `source_id` would be a reasonable follow-on refactor once a third
+   credentialed adapter exists, but is out of this task's scope per its own
+   "smallest Task-5-safe extension, document the debt" instruction — tracked
+   here as acknowledged debt, not silently deferred.
+6. **Employment-type translation reuses the one existing generic value this
+   project already checks, not a new filter surface**: `AdzunaAdapter`
+   already reads exactly one `SourceSearchParams.employment_types` value
+   ("full_time") to set its own request parameter; `ReedAdapter` maps that
+   same, already-established generic value onto Reed's own documented
+   `fullTime` boolean parameter. Reed's other documented boolean filters
+   (`permanent`/`contract`/`temp`/`partTime`/`postedByRecruitmentAgency`/
+   `postedByDirectEmployer`/`graduate`) and `distanceFromLocation` are not
+   wired — no existing generic model field carries that intent, and adding
+   one would be inventing a new filter surface this task explicitly
+   discourages ("do not implement every possible parameter simply because
+   the API exposes it").
+**Alternatives**: Calling the Details endpoint once per search result to get
+a real canonical URL/currency/job-type (rejected — unbounded per-result
+fan-out, see point 1); treating `employerId`/`employerProfileId` as grounds
+for `company_filter=True` (rejected — explicitly contradicts D-041's own
+stated warning); guessing at real-world Reed JSON field casing from prior
+general knowledge of the API rather than the verified docs fetched at
+implementation time (rejected — this project's evidence bar, D-016/D-027/
+D-028/D-031, requires citing what was actually checked; the camelCase
+mapping is disclosed as an inference, not presented as confirmed fact);
+generalising `_effective_config_status`/`_default_adapter_factory` into a
+credential-mapping registry now (rejected — a disproportionate refactor for
+a second adapter, deferred with the debt explicitly recorded per this task's
+own instruction, not silently absorbed).
+**Why**: Every choice here follows the same evidence-bar-first, smallest-
+safe-change discipline this project has already established for Adzuna
+(D-016/D-027/D-028/D-031) and for `SourceCapabilities` itself (D-041) —
+verify against the actual official documentation, degrade honestly to
+`None`/`False`/absent rather than fabricate when the documentation doesn't
+support a claim, and extend existing narrow mechanisms by the smallest
+matching increment rather than generalising ahead of a second real need.

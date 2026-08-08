@@ -210,14 +210,21 @@ def _effective_config_status(entry: SourceRegistryEntry, env: EnvConfig | None) 
     credential information available (e.g. an env-agnostic caller/test) —
     fall back to the declared status unchanged rather than guessing.
 
-    Milestone 1 has exactly one adapter (`adzuna_api`, decisions.md D-002),
-    so it's the only source with a known credential check; every other
-    source_id's effective status is its declared status until it gets its
-    own adapter and a matching credential rule here."""
+    Milestone 1 shipped exactly one adapter (`adzuna_api`, decisions.md
+    D-002); Milestone 2 Deliverable 5 step 5 adds `reed_api` (decisions.md
+    D-046) as the second known credential check via the same narrow
+    if/elif shape — not a generic per-adapter credential-mapping mechanism
+    (that refactor is out of this task's scope; see D-046's documented
+    debt). Every other source_id's effective status is its declared status
+    until it gets its own adapter and a matching credential rule here."""
     if env is None:
         return entry.config_status
     if entry.source_id == "adzuna_api":
         if env.adzuna_app_id and env.adzuna_app_key:
+            return ConfigStatus.CONFIGURED
+        return ConfigStatus.NEEDS_CREDENTIALS
+    if entry.source_id == "reed_api":
+        if env.reed_api_key:
             return ConfigStatus.CONFIGURED
         return ConfigStatus.NEEDS_CREDENTIALS
     return entry.config_status

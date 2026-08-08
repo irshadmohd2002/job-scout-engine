@@ -150,17 +150,22 @@ source is otherwise `executable`, so a partially-applicable source is fully
 transparent per-country; see §11a).
 
 `config_status` vs `effective_config_status` (Milestone 1.1, decisions.md
-D-029): `config_status` stays exactly what §4 describes below — static,
+D-029; extended Milestone 2 Deliverable 5 step 5, decisions.md D-046):
+`config_status` stays exactly what §4 describes below — static,
 user-maintained registry metadata, never written back by the engine.
 `effective_config_status` is a live view computed by `build_plan` from an
 optional `EnvConfig`: for `adzuna_api` it's `configured` when
-`ADZUNA_APP_ID`/`ADZUNA_APP_KEY` are both present, else `needs_credentials`,
-regardless of what the registry YAML declares; every other source_id (no
-adapter/credential rule implemented yet) falls back to its declared
-`config_status` unchanged. `build_plan(..., env=None)` (the default) leaves
-`effective_config_status == config_status` for every source — existing
-callers that don't pass `env` see no behaviour change. Never derived from or
-displaying a secret value, only a boolean-derived enum.
+`ADZUNA_APP_ID`/`ADZUNA_APP_KEY` are both present, else `needs_credentials`;
+for `reed_api` it's `configured` when `REED_API_KEY` is present, else
+`needs_credentials`; both regardless of what the registry YAML declares.
+Every other source_id (no adapter/credential rule implemented yet) falls
+back to its declared `config_status` unchanged — this is a narrow, per-
+source_id if/elif addition each time a new credentialed adapter ships, not a
+generic credential-mapping mechanism (acknowledged debt, D-046).
+`build_plan(..., env=None)` (the default) leaves `effective_config_status ==
+config_status` for every source — existing callers that don't pass `env` see
+no behaviour change. Never derived from or displaying a secret value, only a
+boolean-derived enum.
 
 `CountryExclusion`: `country: str`, `reason: str` (e.g.
 `"not_in_geographic_coverage"`).
@@ -258,7 +263,17 @@ Rules every adapter must follow:
   normalised the same way.
 
 Milestone 1 implements exactly one adapter: `AdzunaAdapter` (`public_api`,
-`approved`).
+`approved`). Milestone 2 Deliverable 5 step 5 adds a second: `ReedAdapter`
+(`sources/reed.py`, `public_api`, ships `manual_review` in the packaged
+registry template — see decisions.md D-046). It follows the same structural
+shape (per-country loop, `is_configured()`, typed exceptions) and calls only
+Reed's documented Search endpoint (`GET /api/1.0/search`), never the
+separate Details endpoint — see D-046 point 1 for why, and its module
+docstring for the full verified contract, including a documented gap in
+Reed's own published docs (no literal JSON response example, so response
+field-name casing is this project's best-effort camelCase inference from the
+docs' prose "Returns" labels, flagged for live confirmation via the new
+opt-in `tests/test_reed_integration.py`).
 
 **Known limitation — truncated descriptions**: Adzuna's `/search` endpoint
 returns only a snippet of each job's description (their own docs state this
@@ -836,7 +851,8 @@ src/job_scout/
 ├── sources/
 │   ├── __init__.py
 │   ├── base.py                # SourceAdapter Protocol, RawJobRecord, exceptions
-│   └── adzuna.py                # AdzunaAdapter — the only adapter in M1
+│   ├── adzuna.py                # AdzunaAdapter — the only adapter in M1
+│   └── reed.py                   # ReedAdapter — added Milestone 2 Deliverable 5 step 5
 ├── matching/
 │   ├── __init__.py
 │   ├── hard_filters.py           # Stage 1
@@ -873,13 +889,17 @@ later milestone's model count actually makes one file unwieldy.
 
 ### Adapter selection needs no factory
 
-Milestone 1 has exactly one adapter (`AdzunaAdapter`). `pipeline.py` imports
-it directly and calls it for any `SelectedSource` where
-`source_id == "adzuna_api"` and `executable` is true. There is no adapter
-registry, factory, or `adapter_ref`-keyed dynamic-import mechanism — that
-kind of plugin-loading indirection is explicitly out of scope (see below) and
-has nothing to abstract yet with a single concrete adapter. Revisit only when
-a second adapter actually exists.
+Milestone 1 shipped exactly one adapter (`AdzunaAdapter`); Milestone 2
+Deliverable 5 step 5 added a second (`ReedAdapter`, decisions.md D-046).
+`pipeline.py::_default_adapter_factory` is still a plain closure with an
+`if`/`elif` per `source_id` — not a registry, factory class, or
+`adapter_ref`-keyed dynamic-import mechanism. Adding Reed meant adding one
+module and one more `if` branch, exactly as this section originally
+predicted ("adding a second adapter later means adding a module and one line
+in `pipeline.py`, not a loader") — confirmed, not revised. That kind of
+plugin-loading indirection remains explicitly out of scope (see below);
+revisit only if a much larger number of adapters ever makes the `if`/`elif`
+chain itself unwieldy, which two entries does not.
 
 ### What Milestone 1 deliberately does not add
 

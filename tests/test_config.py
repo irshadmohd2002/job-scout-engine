@@ -177,18 +177,55 @@ def test_packaged_source_registry_template_adzuna_capabilities_are_verified_defa
     assert adzuna.capabilities == SourceCapabilities()
 
 
-def test_non_adzuna_template_entries_have_no_explicit_capabilities_block() -> None:
-    """Guardrail audit (2026-08-08): only adzuna_api's capabilities are
-    actually verified (decisions.md D-016/D-031). Every other packaged
-    template entry — including greenhouse_public_feeds/lever_public_postings
-    — must NOT carry a fabricated `capabilities:` block claiming verified
-    support; they inherit SourceCapabilities()'s field default only, per
-    decisions.md D-041's explicit backward-compatibility design ("every
-    existing registry entry ... keeps validating and behaving unchanged").
-    This is a documentation/inert-metadata concern only: nothing in
-    Milestone 2 Task 1 reads `.capabilities` for planning/execution, and
-    every non-adzuna entry below is already non-executable regardless of
-    capabilities (manual_review/alert_only/requires_authorisation/blocked)."""
+def test_packaged_source_registry_template_reed_capabilities_are_explicit() -> None:
+    """decisions.md D-046 (Milestone 2 Deliverable 5 step 5): reed_api's
+    packaged capabilities block must be the project's explicit, verified
+    values — not the inherited Adzuna-shaped default — and must in
+    particular never fabricate exact_phrase_search/company_filter/
+    canonical_application_url support Reed's Search API doesn't document."""
+    import yaml
+
+    from job_scout.models import SourceCapabilities, SourceRegistryEntry
+    from job_scout.resources import template_text
+
+    parsed = yaml.safe_load(template_text("source_registry.example.yaml"))
+    by_id = {source["source_id"]: source for source in parsed["sources"]}
+    assert "capabilities" in by_id["reed_api"]
+    reed = SourceRegistryEntry.model_validate(by_id["reed_api"])
+    assert reed.capabilities != SourceCapabilities()
+    assert reed.capabilities == SourceCapabilities(
+        keyword_search=True,
+        exact_phrase_search=False,
+        location_filter=True,
+        country_filter=False,
+        city_filter=True,
+        industry_filter=False,
+        company_filter=False,
+        remote_filter=False,
+        salary_data=True,
+        structured_description=False,
+        pagination=True,
+        page_size_control=True,
+        posting_date_filter=False,
+        stable_external_job_id=True,
+        canonical_application_url=False,
+        max_recommended_queries_per_request=None,
+    )
+
+
+def test_non_adzuna_non_reed_template_entries_have_no_explicit_capabilities_block() -> None:
+    """Guardrail audit (2026-08-08, extended 2026-08-08 for Task 5): only
+    adzuna_api's and reed_api's capabilities are actually verified
+    (decisions.md D-016/D-031/D-046). Every other packaged template entry —
+    including greenhouse_public_feeds/lever_public_postings — must NOT carry
+    a fabricated `capabilities:` block claiming verified support; they
+    inherit SourceCapabilities()'s field default only, per decisions.md
+    D-041's explicit backward-compatibility design ("every existing registry
+    entry ... keeps validating and behaving unchanged"). This is a
+    documentation/inert-metadata concern only: nothing reads `.capabilities`
+    for these entries' planning/execution, and every one of them is already
+    non-executable regardless of capabilities (manual_review/alert_only/
+    requires_authorisation/blocked)."""
     import yaml
 
     from job_scout.models import SourceCapabilities, SourceRegistryEntry
@@ -196,7 +233,7 @@ def test_non_adzuna_template_entries_have_no_explicit_capabilities_block() -> No
 
     parsed = yaml.safe_load(template_text("source_registry.example.yaml"))
     for raw_source in parsed["sources"]:
-        if raw_source["source_id"] == "adzuna_api":
+        if raw_source["source_id"] in ("adzuna_api", "reed_api"):
             continue
         assert "capabilities" not in raw_source, (
             f"{raw_source['source_id']} must not carry a fabricated capabilities "

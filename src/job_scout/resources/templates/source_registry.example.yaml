@@ -43,9 +43,10 @@
 # requires_authorisation/blocked), so this has no behavioural effect now.
 # Each real adapter gets its own explicit, verified `capabilities` block
 # when it's actually implemented (Milestone 2 Deliverable 5 steps 5/7/8) —
-# e.g. Greenhouse/Lever's real shape is `company_filter: true,
-# keyword_search: false`, the opposite of the inherited default shown
-# above for greenhouse_public_feeds/lever_public_postings today.
+# reed_api below is the first of these (decisions.md D-046); Greenhouse/
+# Lever's real shape will be `company_filter: true, keyword_search: false`,
+# the opposite of the inherited default shown above for
+# greenhouse_public_feeds/lever_public_postings today.
 
 sources:
   - source_id: adzuna_api
@@ -101,6 +102,81 @@ sources:
       posting_date_filter: false
       stable_external_job_id: true
       canonical_application_url: true
+      max_recommended_queries_per_request: null
+
+  - source_id: reed_api
+    name: "Reed.co.uk Jobseeker API"
+    source_type: aggregator_api
+    # Reed is a UK-only job board (verified against its own developer docs,
+    # decisions.md D-046) — GB only, unlike Adzuna's multi-market coverage.
+    geographic_coverage: [GB]
+    role_coverage: [general]
+    industry_coverage: []
+    sector_coverage: []
+    seniority_coverage: []
+    access_mode: public_api
+    # Never approved by default (CLAUDE.md hard constraint 1) — Reed's
+    # current terms have not been reviewed by this project; a user promotes
+    # this entry in their own source_registry.yaml only after confirming
+    # current terms themselves (MILESTONE_2.md Deliverable 4 priority
+    # matrix: "requires verification").
+    approval_status: manual_review
+    terms_compliance_status: unclear
+    auth_required: true
+    technical_feasibility: high
+    expected_value: high
+    priority: 95
+    polling_frequency_minutes: 720
+    config_status: needs_credentials # requires REED_API_KEY
+    required_setup_actions:
+      - "Register a free Reed developer account and set REED_API_KEY"
+      - "Review Reed's current terms of use before promoting to approved"
+    adapter_ref: reed
+    reliability_score: null
+    historical_match_count: null
+    duplicate_rate: null
+    # Verified against ReedAdapter's actual contract (decisions.md D-046,
+    # against https://www.reed.co.uk/developers/jobseeker at implementation
+    # time): `keywords` is a single generic term parameter with no
+    # documented literal-phrase/quote syntax (exact_phrase_search: false);
+    # `locationName` is a free-text location filter, the same
+    # one-parameter-covers-city-and-location shape already accepted for
+    # adzuna_api's `where`-equivalent (city_filter: true) — but there is no
+    # separate country-scoping request parameter at all, unlike Adzuna's
+    # per-country endpoint path (country_filter: false; geographic coverage
+    # above is a registry/planner concept, not an API-side filter);
+    # `employerId`/`employerProfileId` exist but do NOT make this a
+    # watchlist-scoped source per D-041's explicit warning — Reed stays a
+    # normal keyword-search source (company_filter: false); no
+    # industry/remote-work parameter is documented; `minimumSalary`/
+    # `maximumSalary` are present in the Search response (salary_data:
+    # true) but currency is a Details-endpoint-only field this adapter does
+    # not call (see sources/reed.py); the Search response's `description`
+    # is a single freeform text field, not structured
+    # (structured_description: false); `resultsToTake`/`resultsToSkip`
+    # give real offset pagination and page-size control, capped at Reed's
+    # documented 100-result maximum; no posting-date filter parameter is
+    # documented; `jobId` is a stable per-listing identifier
+    # (stable_external_job_id: true); the Search response provides no
+    # application/job URL at all (only the unused Details endpoint does),
+    # so this adapter never acquires one (canonical_application_url: false)
+    # — never fabricated from an undocumented URL format.
+    capabilities:
+      keyword_search: true
+      exact_phrase_search: false
+      location_filter: true
+      country_filter: false
+      city_filter: true
+      industry_filter: false
+      company_filter: false
+      remote_filter: false
+      salary_data: true
+      structured_description: false
+      pagination: true
+      page_size_control: true
+      posting_date_filter: false
+      stable_external_job_id: true
+      canonical_application_url: false
       max_recommended_queries_per_request: null
 
   - source_id: greenhouse_public_feeds

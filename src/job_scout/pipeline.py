@@ -51,6 +51,7 @@ from job_scout.source_intelligence.compliance import authorize
 from job_scout.source_intelligence.planner import build_plan
 from job_scout.sources.adzuna import AdzunaAdapter
 from job_scout.sources.base import SourceAdapter, SourceAdapterError
+from job_scout.sources.reed import ReedAdapter
 
 RECENT_WINDOW_DAYS = 45
 RECENT_WINDOW_LIMIT = 2000
@@ -70,7 +71,13 @@ def _default_adapter_factory(env: EnvConfig, execution_limits: ExecutionLimits) 
                 request_timeout_seconds=execution_limits.request_timeout_seconds,
                 max_retries=execution_limits.max_retries,
             )
-        return None  # no adapter implemented for this source in Milestone 1 (decisions.md D-002)
+        if source_id == "reed_api":
+            return ReedAdapter(
+                api_key=env.reed_api_key,
+                request_timeout_seconds=execution_limits.request_timeout_seconds,
+                max_retries=execution_limits.max_retries,
+            )
+        return None  # no adapter implemented for this source_id yet (decisions.md D-002)
 
     return factory
 
@@ -150,7 +157,75 @@ def normalize_adzuna_record(record: RawJobRecord) -> Job:
     )
 
 
-_NORMALIZERS: dict[str, Callable[[RawJobRecord], Job]] = {"adzuna_api": normalize_adzuna_record}
+def normalize_reed_record(record: RawJobRecord) -> Job:
+    # Milestone 2 Deliverable 5 step 5 (decisions.md D-046): field names
+    # below follow ReedAdapter's own documented-label-to-camelCase mapping
+    # (see sources/reed.py's module docstring for the verification gap).
+    payload = record.raw_payload
+    title = str(payload.get("jobTitle", "")).strip()
+    company = str(payload.get("employerName", "Unknown")).strip()
+    country = str(payload.get("_query_country", "")).upper()
+    location = Location(country=country, city=payload.get("locationName"))
+
+    description_raw = str(payload.get("description", ""))
+    description_text = strip_html(description_raw)
+
+    # Reed's documented Search Returns carries no posted-date field — never
+    # guessed (D-040's normalization-field rule).
+    posted_at: datetime | None = None
+
+    fingerprint = compute_fingerprint(
+        source_id=record.source_id,
+        external_id=record.external_id,
+        raw_url=record.raw_url,
+        company=company,
+        title=title,
+        location=location,
+        description_text=description_text,
+        posted_at=posted_at,
+    )
+
+    provenance = SourceProvenance(
+        source_id=record.source_id,
+        access_mode=ReedAdapter.access_mode,
+        fetched_at=record.fetched_at,
+        raw_url=record.raw_url,
+        external_id=record.external_id,
+    )
+
+    return Job(
+        job_id=str(uuid.uuid4()),
+        external_ids=[SourceExternalId(source_id=record.source_id, external_id=record.external_id)],
+        title=title,
+        normalized_title=fingerprint.normalized_title,
+        company=company,
+        normalized_company=fingerprint.normalized_company,
+        location=location,
+        remote_type=_guess_remote_type(description_text),
+        # Reed's documented Search Returns has no job-type/contract-type
+        # field (that detail is Details-endpoint-only, deliberately not
+        # called here — see sources/reed.py) — never guessed from
+        # title/description (D-040).
+        employment_type=None,
+        description_raw=description_raw,
+        description_text=description_text,
+        posted_at=posted_at,
+        collected_at=datetime.now(UTC),
+        salary_min=payload.get("minimumSalary"),
+        salary_max=payload.get("maximumSalary"),
+        # Currency is a Details-endpoint-only field per Reed's docs; the
+        # Search endpoint this adapter uses never returns one.
+        salary_currency=None,
+        source_provenance=[provenance],
+        fingerprint=fingerprint,
+        role_family_hints=[],
+    )
+
+
+_NORMALIZERS: dict[str, Callable[[RawJobRecord], Job]] = {
+    "adzuna_api": normalize_adzuna_record,
+    "reed_api": normalize_reed_record,
+}
 
 
 @dataclass
