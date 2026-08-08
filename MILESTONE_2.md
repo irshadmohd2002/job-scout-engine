@@ -573,36 +573,75 @@ vacancy. This is the real gap Workstream C needs to close.
 
 Schema changes are additive `CREATE TABLE`/`CREATE INDEX IF NOT EXISTS`
 statements, same pattern `sqlite_repo.py` already uses (no migration
-framework, per CLAUDE.md hard constraint 9) — bump `_SCHEMA_VERSION` to `2`
-so the existing `PRAGMA user_version` check (D-026) marks the point cleanly;
-opening an M1.1 database with M2 code is a no-op schema upgrade (new tables/
-indexes only), and opening an M2 database with older code still fails loudly
-via the existing `SchemaVersionError`.
+framework, per CLAUDE.md hard constraint 9) — but each *materially
+different* resulting schema shape still gets its own `_SCHEMA_VERSION`
+integer, one increment per shape, never two shapes sharing one identifier
+(architecture.md §15.6, decisions.md D-026's `PRAGMA user_version` gate: an
+older build must be able to refuse a database whose schema it doesn't
+recognise, which only works if a given version number always means exactly
+one fixed set of tables/columns). **Ownership correction (2026-08-08
+reconciliation pass, post-Task-2; corrected again same day after an
+inconsistency was found in the first pass)**: no single early task performs
+one bundled schema migration for all of M2's persistence needs, and no two
+tasks stamp their databases with the same version number while adding
+different schema objects. Concretely, starting from the M1/1.1 baseline
+(`_SCHEMA_VERSION = 1`):
+- **Task 9** (cross-source deduplication and provenance) is the first step
+  in the Deliverable 5 sequence that changes `sqlite_repo.py`'s schema, and
+  bumps `_SCHEMA_VERSION` from `1` to `2` — the canonical-URL index below is
+  the entire content of what version `2` means.
+- **Task 10** (sponsor registry + UK provider + visa enrichment) adds a
+  further, materially different set of schema objects (a new table, two new
+  indexed columns) — a database with only Task 9's index is not the same
+  schema as one that also has Task 10's table/columns, so Task 10 bumps
+  `_SCHEMA_VERSION` again, from `2` to `3`, rather than reusing `2`. A
+  database stamped `2` (Task-9-only code) opened under Task-10-or-later code
+  upgrades to `3` the same no-op, additive way `_ensure_schema_version()`
+  already handles every version increase today; code that only understands
+  up to `2` still correctly refuses a `3`-stamped database via the existing
+  `SchemaVersionError`, preserving D-026's guarantee.
+- If a later M2 task's persistence need arises beyond Task 10, it follows
+  the same rule — its own further increment (`4`, and so on), never a reused
+  number — per this repository's established `_SCHEMA_VERSION`/`PRAGMA
+  user_version` policy (D-026) applied at implementation time, not
+  hard-coded ahead of that work.
+
+Opening an M1.1 database with M2 code is a no-op schema upgrade (new
+tables/indexes only) at whichever point Task 9 (then Task 10) lands; opening
+a newer-schema M2 database with older code still fails loudly via the
+existing `SchemaVersionError`.
 
 - `CREATE INDEX IF NOT EXISTS idx_job_fingerprints_canonical_url ON
   job_fingerprints(canonical_url)` — non-unique, backs the new cross-source
   exact-URL dedup tier (the existing `PRIMARY KEY (canonical_url,
-  external_source_id)` already covers Tier 1's own lookup).
+  external_source_id)` already covers Tier 1's own lookup). **Owned by Task
+  9** — this is the schema change that performs the `_SCHEMA_VERSION` `1`→`2`
+  bump described above.
 - `visa_assessments` table already exists (reserved since M1) — no schema
   change to the table itself, but M2 is the first milestone that actually
   calls `save_visa_assessment`. Add two plain indexed columns
   (`status TEXT`, mirroring how `match_results` already duplicates
   `notification_tier`/`final_score` alongside its JSON blob) so a future
   `job-scout` query/report command can filter by visa status without
-  deserialising every row's JSON.
+  deserialising every row's JSON. **Owned by Task 10**, part of the
+  `_SCHEMA_VERSION` `2`→`3` bump Task 10 performs (not the same version
+  number Task 9 used).
 - New table `sponsor_registry_entries` (`country`, `registered_name`,
   `normalized_name`, `register_name`, `license_status`, `imported_at`),
   indexed on `(country, normalized_name)` for the join `sponsor_registry.py`
   performs. `job-scout sponsors import` replaces (not appends to) the rows
   for the given `(country, register_name)` pair on each import, so
   re-importing a refreshed snapshot is the documented update path — never an
-  automatic re-download.
+  automatic re-download. **Owned by Task 10**, same `2`→`3` bump as the
+  `visa_assessments` columns above.
 - **`company_watchlist.yaml` stays YAML-first**, like `source_registry.yaml`
   — no new SQLite table for it, consistent with D-009's "no database copy of
   YAML-first config" principle; it's small, hand-edited, user-owned data,
-  not something the engine mutates at runtime.
+  not something the engine mutates at runtime. **Owned by Task 6** (config
+  surface only, no schema change).
 - `source_provenance` table is **unchanged** — see Workstream F conclusion
-  immediately below.
+  immediately below. The new `list_provenance()` read method is **owned by
+  Task 9**, alongside its canonical-URL index work.
 
 ## Source observations and provenance (Workstream F)
 
@@ -956,11 +995,14 @@ Every new behaviour gets unit coverage mirroring the existing suite's style
   (D-029/D-032/D-033/D-034): validate against a live-shaped fixture before
   merging, and a straightforward `git revert` if a live run afterward shows
   a regression.
-- The schema-version bump (`_SCHEMA_VERSION = 2`) is purely additive
-  (`CREATE TABLE`/`CREATE INDEX IF NOT EXISTS`) — an M1.1 database opens
-  under M2 code with no data loss; an M2 database opened by pre-M2 code
-  fails loudly via the existing `SchemaVersionError` rather than silently
-  misreading new tables.
+- The schema-version bumps (`_SCHEMA_VERSION` `1`→`2` performed by Task 9,
+  then `2`→`3` performed by Task 10 — see "Persistence implications" for why
+  these are two separate increments, not one shared version number) are
+  each purely additive (`CREATE TABLE`/`CREATE INDEX IF NOT EXISTS`) — an
+  M1.1 database opens under M2 code with no data loss, upgrading through
+  each version in turn; an M2 database opened by code that only understands
+  an earlier version fails loudly via the existing `SchemaVersionError`
+  rather than silently misreading new tables.
 - Sponsor-register import is explicit, user-triggered, and replaces (not
   appends to) the prior snapshot for that `(country, register_name)` — never
   automatic, never partial.
@@ -1050,21 +1092,40 @@ this is a split, not a reordering, of the prior sequence.
    scoring/matching/dedup logic yet (that happens in the specific later
    steps that need it — see D-041's "real consumption points").
 
-2. **Query-plan/domain changes.** The rest of the original scaffolding:
-   `PlannedQuery`, extended `CompanyWatchlistEntry`, `SponsorRegistryEntry`/
-   `SponsorRegistryMatch`, `EvaluationLabel`/`EvaluationJobFixture` (five
-   labels, D-043); `ExecutionLimits.max_queries_per_source_country`;
-   `sqlite_repo.py` schema bump to v2 (new index, new table, new visa
-   columns) with no behavioural change yet. **Files**: `models.py`,
-   `config.py`, `repository/sqlite_repo.py`. **Tests**: model validation
-   round-trips, config loader tests, a schema-migration test opening a
-   v1-stamped fixture database under v2 code and asserting the new objects
-   appear without data loss. **Acceptance**: full existing suite still
-   green; new models/config importable and validated in isolation.
-   **Dependency**: step 1 (some of these models reference
-   `SourceCapabilities`-shaped concepts in their docs/tests, though not by
-   a hard type dependency). **Non-goals**: no query-planner logic yet
-   (step 3); no adapter code yet.
+2. **Query-plan/domain changes.** Domain-model additions needed for the
+   future query planner, and nothing else: `PlannedQuery(label, keywords,
+   mode, provenance)`; `SelectedSource.planned_queries: list[PlannedQuery] =
+   []` and `estimated_request_count: int = 0` (both defaulted — no
+   behavioural change, left unpopulated until step 3 wires the planner);
+   `ExecutionLimits.max_queries_per_source_country` (positive-int validated,
+   conservative default `3`, packaged `execution_limits.example.yaml`
+   updated). **Ownership correction (2026-08-08 reconciliation pass, after
+   this step's implementation)**: this step was originally drafted bundling
+   in the extended `CompanyWatchlistEntry`, `SponsorRegistryEntry`/
+   `SponsorRegistryMatch`, `EvaluationLabel`/`EvaluationJobFixture`, and a
+   `sqlite_repo.py` schema-v2 bump — none of that belongs here. Those
+   additions are **not** part of this step; each now lands immediately
+   before or alongside the specific later feature that actually consumes
+   it, not scaffolded years ahead of use — see step 6 (watchlist), step 9
+   (cross-source-dedup persistence, and the schema-version bump itself),
+   step 10 (sponsor/visa models and persistence), and step 11 (evaluation
+   models) respectively. **Files**: `models.py`, `config.py`,
+   `src/job_scout/resources/templates/execution_limits.example.yaml`.
+   **Tests**: `PlannedQuery` field/mode validation and round-trip,
+   `SelectedSource` backward-compatibility (no `planned_queries`/
+   `estimated_request_count` supplied keeps validating) and multi-query
+   structural-capacity tests, `ExecutionLimits.max_queries_per_source_country`
+   config-loader tests (default-when-omitted, explicit value, rejects
+   non-positive), a planner test confirming `build_plan()` generates no
+   extra queries yet (M1/1.1 single-query representation unchanged).
+   **Acceptance**: full existing suite still green; new models/config
+   importable and validated in isolation. **Dependency**: step 1
+   (`PlannedQuery.mode` is designed to be gated by `SourceCapabilities
+   .exact_phrase_search`/`keyword_search` once step 3 exists, though this
+   step itself has no hard type dependency on step 1). **Non-goals**: no
+   query-planner logic yet (step 3); no adapter code yet; no watchlist/
+   sponsor/evaluation models or schema changes (see ownership correction
+   above) — those are step 6/9/10/11's scope, not this one's.
 
 3. **`SearchProfile`-driven query planner.** New
    `source_intelligence/query_planner.py` implementing the bounded hybrid
@@ -1108,14 +1169,21 @@ this is a split, not a reordering, of the prior sequence.
    planner's keyword queries). **Non-goals**: no watchlist dependency —
    Reed is an aggregator like Adzuna, useful immediately.
 
-6. **ATS watchlist/config model.** `load_company_watchlist`,
-   `company_watchlist.example.yaml` template, `job-scout init` wiring.
-   **Files**: `config.py`, new template, `bootstrap.py`. **Tests**: loader
-   tests, template validation, `test_init.py` extension. **Acceptance**:
-   `job-scout init` creates the new template; an empty watchlist validates
-   cleanly (zero entries is a valid, common state). **Dependency**: step 2.
-   **Non-goals**: no adapter reads this yet (steps 7/8) — this step is the
-   config surface only.
+6. **ATS watchlist/config model.** `CompanyWatchlistEntry` (already reserved
+   since M1.1, architecture.md §2.14) gains `source_id: str` and
+   `external_company_key: str` — moved here from the originally-drafted
+   step 2 by the 2026-08-08 reconciliation pass, since this is the step that
+   actually consumes those fields (`priority`/`notes` unchanged);
+   `load_company_watchlist`, `company_watchlist.example.yaml` template,
+   `job-scout init` wiring. **Files**: `models.py` (`CompanyWatchlistEntry`
+   fields), `config.py`, new template, `bootstrap.py`. **Tests**: model
+   validation for the two new fields, loader tests, template validation,
+   `test_init.py` extension. **Acceptance**: `job-scout init` creates the
+   new template; an empty watchlist validates cleanly (zero entries is a
+   valid, common state). **Dependency**: none (the reserved
+   `CompanyWatchlistEntry` base model already exists; this step's field
+   additions are self-contained). **Non-goals**: no adapter reads this yet
+   (steps 7/8) — this step is the config surface only.
 
 7. **Greenhouse adapter.** `sources/greenhouse.py`, one fetch per
    watchlisted board token, registry template entry updated with a real
@@ -1137,65 +1205,99 @@ this is a split, not a reordering, of the prior sequence.
    the exact-cross-source-URL tier (gated on both sources'
    `SourceCapabilities.canonical_application_url`, step 1) and the
    bounded-Jaccard probable-duplicate tier; `sqlite_repo.py` gains the
-   canonical-URL index and `JobRepository.list_provenance()`. **Files**:
-   `deduplication.py`, `repository/sqlite_repo.py`, `pipeline.py` (wiring
-   the new tier into the existing dedup call site). **Tests**: unit tests
-   per new tier, including explicit false-merge-guard negative cases (both
-   a same-company-different-location case and a
+   canonical-URL index and `JobRepository.list_provenance()`. **This is the
+   first step in the sequence that changes the SQLite schema** (2026-08-08
+   reconciliation pass) — it therefore performs the `_SCHEMA_VERSION` bump
+   from `1` to `2` (see "Persistence implications"), rather than that bump
+   happening speculatively back in step 2 before any schema-consuming
+   feature existed. **Files**: `deduplication.py`, `repository/sqlite_repo.py`
+   (canonical-URL index, `list_provenance()`, the schema-version bump),
+   `pipeline.py` (wiring the new tier into the existing dedup call site).
+   **Tests**: unit tests per new tier, including explicit false-merge-guard
+   negative cases (both a same-company-different-location case and a
    `canonical_application_url: false` capability-gating case, per step 1's
-   testing-strategy addition); an end-to-end multi-source pipeline test
-   (steps 5/7/8's fixtures) asserting one canonical `Job` with multiple
-   provenance rows. **Acceptance**: the multi-source pipeline test passes;
-   every existing Tier 1–3 test still passes unmodified. **Dependency**:
-   steps 5, 7, 8 (needs ≥2 real source shapes to test meaningfully, though
-   the tier logic itself only depends on steps 1–2's schema work).
-   **Non-goals**: no embeddings/near-duplicate model; no
-   `SourceObservation` model (D-038 — the existing `source_provenance` table
-   already serves this).
+   testing-strategy addition); a schema-migration test opening a
+   v1-stamped fixture database under this step's code and asserting the new
+   index/method appear without data loss; an end-to-end multi-source
+   pipeline test (steps 5/7/8's fixtures) asserting one canonical `Job` with
+   multiple provenance rows. **Acceptance**: the multi-source pipeline test
+   passes; every existing Tier 1–3 test still passes unmodified.
+   **Dependency**: steps 5, 7, 8 (needs ≥2 real source shapes to test
+   meaningfully, though the tier logic itself only depends on step 1's
+   `SourceCapabilities` work — not step 2, which no longer owns any schema
+   scaffolding this step needs). **Non-goals**: no embeddings/near-duplicate
+   model; no `SourceObservation` model (D-038 — the existing
+   `source_provenance` table already serves this).
 
 10. **Sponsor registry + UK provider + visa enrichment.**
-    `SponsorRegistryEntry` persistence + `sponsor_registry.py::
-    find_sponsor_match`; `job-scout sponsors import`; UK Home Office
-    register parser (mandatory, D-042); new `matching/visa.py::assess_visa`
-    (consolidating the duplicated positive/negative regex patterns out of
-    `scoring.py`/`hard_filters.py` into a shared `matching/
-    visa_patterns.py`); pipeline wiring to construct and persist a
-    `VisaAssessment` per scored job. A Netherlands provider may be added
-    here too **only if** none of D-042's non-blocking conditions apply —
-    otherwise it's explicitly deferred without failing this step.
-    **Files**: `models.py` (if not done in step 2),
-    `repository/sqlite_repo.py`, `source_intelligence/sponsor_registry.py`,
-    `matching/visa.py`, `matching/visa_patterns.py`,
-    `matching/scoring.py`/`matching/hard_filters.py` (import from the
-    shared module instead of their own copies), `cli.py`, `pipeline.py`.
-    **Tests**: sponsor-name normalisation/join tests (true positive,
-    deliberate near-miss false-positive guard), visa-precedence tests (all
-    five evidence-combination cases from the Testing strategy section), a
+    `SponsorRegistryEntry`/`SponsorRegistryMatch` (moved here from the
+    originally-drafted step 2 by the 2026-08-08 reconciliation pass — this
+    is the step that actually consumes them) + persistence +
+    `sponsor_registry.py::find_sponsor_match`; `job-scout sponsors import`;
+    UK Home Office register parser (mandatory, D-042); new
+    `matching/visa.py::assess_visa` (consolidating the duplicated
+    positive/negative regex patterns out of `scoring.py`/`hard_filters.py`
+    into a shared `matching/visa_patterns.py`); pipeline wiring to construct
+    and persist a `VisaAssessment` per scored job. A Netherlands provider
+    may be added here too **only if** none of D-042's non-blocking
+    conditions apply — otherwise it's explicitly deferred without failing
+    this step. **Files**: `models.py` (`SponsorRegistryEntry`,
+    `SponsorRegistryMatch`), `repository/sqlite_repo.py` (new
+    `sponsor_registry_entries` table + two new indexed `visa_assessments`
+    columns — see "Persistence implications" for how this step's schema
+    additions relate to Task 9's `_SCHEMA_VERSION` bump),
+    `source_intelligence/sponsor_registry.py`, `matching/visa.py`,
+    `matching/visa_patterns.py`, `matching/scoring.py`/
+    `matching/hard_filters.py` (import from the shared module instead of
+    their own copies), `cli.py`, `pipeline.py`. **Tests**: sponsor-name
+    normalisation/join tests (true positive, deliberate near-miss
+    false-positive guard), visa-precedence tests (all five
+    evidence-combination cases from the Testing strategy section), a
     pipeline integration test asserting `save_visa_assessment` is actually
     called. **Acceptance**: the two UK-fixture scenarios in this document's
     Acceptance criteria (registry match ⇒ `employer_eligible`; explicit
     negative text overrides a registry match) both pass; a missing/deferred
-    Netherlands provider does not fail this step. **Dependency**: step 2
-    only — independent of adapters/dedup, can run in parallel with steps
-    5–9. **Non-goals**: no live register download (either country); no
-    fuzzy/alias employer-name matching.
+    Netherlands provider does not fail this step. **Dependency**: none of
+    step 2's now-narrower scope for its domain models (no dependency
+    remains once `SponsorRegistryEntry`/`SponsorRegistryMatch` are owned
+    here directly) — the sponsor/visa *logic* is independent of
+    adapters/dedup and can be developed in parallel with steps 5–9. Its
+    schema work specifically **does** depend on Task 9 landing first: Task
+    9 owns the milestone's first schema change (`_SCHEMA_VERSION` `1`→`2`),
+    so Task 10 always performs the *next* increment, `2`→`3`, adding its
+    table/columns as a distinct schema shape — never re-stamping a database
+    at `2` while silently adding objects `_SCHEMA_VERSION = 2` doesn't
+    account for (see "Persistence implications" for why reusing Task 9's
+    version number is not correct). If Task 10's implementation genuinely
+    needs to proceed before Task 9's merges, it still must not claim version
+    `2` for its own, different schema — it would instead be the one to bump
+    `1`→`2`, and Task 9 would then need to bump `2`→`3` on top of it; either
+    is safe since every M2 schema change is purely additive. **Non-goals**:
+    no live register download (either country); no fuzzy/alias
+    employer-name matching.
 
 11. **Evaluation tooling and threshold-calibration preparation.**
-    `evaluation.py`, a multi-profession labelled fixture dataset (five
-    labels incl. `deceptive_false_positive`, illustrative/generic — no real
-    personal data, D-043), `job-scout evaluate` command implementing the
-    full metric set from "Evaluation dataset and calibration design".
-    **Files**: new `evaluation.py`, `cli.py`, fixture dataset file(s) under
-    `tests/fixtures/evaluation/`. **Tests**: the evaluation-dataset unit
-    tests from the Testing strategy section (metric arithmetic verified by
-    hand, including ranking-inversion detection and the
+    `EvaluationLabel`/`EvaluationJobFixture` (moved here from the
+    originally-drafted step 2 by the 2026-08-08 reconciliation pass — this
+    is the step, and the only step, that consumes them), `evaluation.py`, a
+    multi-profession labelled fixture dataset (five labels incl.
+    `deceptive_false_positive`, illustrative/generic — no real personal
+    data, D-043), `job-scout evaluate` command implementing the full metric
+    set from "Evaluation dataset and calibration design". **Files**:
+    `models.py` (`EvaluationLabel`, `EvaluationJobFixture`), new
+    `evaluation.py`, `cli.py`, fixture dataset file(s) under
+    `tests/fixtures/evaluation/`. **Tests**: `EvaluationLabel`/
+    `EvaluationJobFixture` model validation, plus the evaluation-dataset
+    unit tests from the Testing strategy section (metric arithmetic
+    verified by hand, including ranking-inversion detection and the
     no-"probability"-language assertion). **Acceptance**: `job-scout
     evaluate --dataset <fixture>` prints numbers matching the hand-computed
     expectations exactly, across at least two profession-shaped fixture
-    groups. **Dependency**: none beyond the existing Stage 1/2/5 functions
-    — can run fully in parallel with everything else. **Non-goals**: does
-    not change `notification_thresholds` (85/70) — this step builds the
-    calibration *tool*, not a recalibration.
+    groups. **Dependency**: none — no dependency on step 2 remains now that
+    `EvaluationLabel`/`EvaluationJobFixture` are owned here directly; can
+    run fully in parallel with everything else, same as before.
+    **Non-goals**: does not change `notification_thresholds` (85/70) — this
+    step builds the calibration *tool*, not a recalibration.
 
 12. **End-to-end M2 acceptance.** Full `pytest`/`ruff check .`/`mypy
     --strict src` green; a live (or live-shaped) smoke run of `job-scout

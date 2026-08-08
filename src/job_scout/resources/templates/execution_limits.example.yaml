@@ -36,3 +36,10 @@ max_retries: 2
 # beyond the country/page/page-size limits above. Recommended to set
 # explicitly while testing a broad profile for the first time.
 max_jobs_processed_per_run: null
+
+# Caps how many distinct planned queries the query planner (Milestone 2) may
+# generate per (source, country) pair. Reserved now, ahead of the planner
+# itself landing, so this guardrail is visible and user-adjustable from the
+# start rather than appearing later with no prior explanation. Not enforced
+# by any query-generation logic yet.
+max_queries_per_source_country: 3

@@ -212,12 +212,20 @@ class ExecutionLimits(BaseModel):
     request_timeout_seconds: float
     max_retries: int
     max_jobs_processed_per_run: int | None = None
+    # Milestone 2 Deliverable 5 step 2 (domain model only): bounds how many
+    # PlannedQuery objects the future query planner (step 3) may generate
+    # per (source, country) pair. Defaulted so every existing
+    # execution_limits.yaml without this key keeps loading unchanged
+    # (MILESTONE_2.md "Configuration changes"). Not enforced by any
+    # query-generation logic yet — no such logic exists in this step.
+    max_queries_per_source_country: int = 3
 
     @field_validator(
         "max_countries_per_run",
         "max_pages_per_source_country",
         "results_per_page",
         "max_retries",
+        "max_queries_per_source_country",
     )
     @classmethod
     def _must_be_positive_int(cls, value: int) -> int:

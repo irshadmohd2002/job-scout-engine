@@ -73,6 +73,29 @@ def test_selected_and_excluded_sources_with_reasons() -> None:
     assert "no_geographic_coverage" in excluded.reasons_excluded
 
 
+def test_build_plan_generates_no_planned_queries_yet() -> None:
+    """Milestone 2 Deliverable 5 step 2 non-goal: the domain model can carry
+    PlannedQuery objects (test_query_plan_models.py), but build_plan() itself
+    has no query-planner wiring yet (that's step 3) — every SelectedSource
+    it produces keeps the M1/1.1 single-query representation unchanged."""
+    candidate = make_candidate_profile(title_aliases=["Strategy Manager"])
+    search = make_search_profile(included_countries=["GB"])
+    adzuna = _adzuna_entry(
+        geographic_coverage=["GB"],
+        approval_status=ApprovalStatus.APPROVED,
+        config_status=ConfigStatus.CONFIGURED,
+    )
+    plan = build_plan(candidate, search, [adzuna], _limits(), _weights())
+
+    selected = next(s for s in plan.selected_sources if s.source_id == "adzuna_api")
+    assert selected.planned_queries == []
+    assert selected.estimated_request_count == 0
+    # M1/1.1 behaviour, byte-for-byte unchanged: exactly one broad OR query.
+    assert selected.search_queries == ["Strategy Manager"]
+    assert selected.search_params is not None
+    assert selected.search_params.keywords == ["Strategy Manager"]
+
+
 def test_source_selected_but_not_executable_when_manual_review() -> None:
     candidate = make_candidate_profile()
     search = make_search_profile(included_countries=["GB"])

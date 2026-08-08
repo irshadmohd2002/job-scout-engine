@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -415,6 +415,28 @@ class CountryExclusion(BaseModel):
     reason: str
 
 
+class PlannedQuery(BaseModel):
+    """One concrete query a source will actually receive (Milestone 2
+    Deliverable 5 step 2; domain model only — decisions.md D-040/D-041
+    context). `mode="exact_phrase"` is a genuine AND/phrase match (a source
+    whose `SourceCapabilities.exact_phrase_search` is True); `mode=
+    "any_of_words"` is a broader OR-of-terms query, used either by choice
+    (a grouped fallback query) or as the degraded fallback for a source that
+    doesn't support exact-phrase queries. `provenance` is a human-readable
+    trail (e.g. `["search.target_titles"]`) recording which configured field(s)
+    produced this query, so `job-scout plan` can show *why* each query exists.
+
+    No `source_intelligence/query_planner.py` exists yet (Milestone 2
+    Deliverable 5 step 3) — nothing constructs `PlannedQuery` instances in
+    the pipeline yet; this step only makes the domain model capable of
+    representing them."""
+
+    label: str
+    keywords: list[str]
+    mode: Literal["exact_phrase", "any_of_words"]
+    provenance: list[str]
+
+
 class SelectedSource(BaseModel):
     source_id: str
     score: float
@@ -424,6 +446,14 @@ class SelectedSource(BaseModel):
     approval_status: ApprovalStatus
     search_params: SourceSearchParams | None
     search_queries: list[str]
+    # Milestone 2 Deliverable 5 step 2 (domain model only): defaults keep
+    # every existing `build_plan()` caller and `SelectedSource` fixture
+    # unchanged until step 3's query_planner.py actually populates them.
+    # `estimated_request_count` mirrors architecture.md section 11a's
+    # existing guardrail arithmetic (`len(supported_countries) *
+    # len(planned_queries) * max_pages_per_source_country`) once populated.
+    planned_queries: list[PlannedQuery] = []
+    estimated_request_count: int = 0
     polling_frequency_minutes: int | None
     config_status: ConfigStatus  # declared: static registry metadata, user-maintained
     effective_config_status: ConfigStatus  # runtime: derived from live credential checks

@@ -252,6 +252,75 @@ def test_execution_limits_falls_back_to_packaged_template(tmp_path: Path) -> Non
     assert limits.max_countries_per_run > 0
 
 
+def test_execution_limits_max_queries_per_source_country_defaults_when_omitted(
+    tmp_path: Path,
+) -> None:
+    """Milestone 2 Deliverable 5 step 2: an existing execution_limits.yaml
+    written before this field existed (no max_queries_per_source_country key
+    at all) must keep loading unchanged."""
+    p = tmp_path / "execution_limits.yaml"
+    p.write_text(
+        """
+max_countries_per_run: 6
+max_pages_per_source_country: 3
+results_per_page: 50
+request_timeout_seconds: 15
+max_retries: 2
+max_jobs_processed_per_run: null
+""",
+        encoding="utf-8",
+    )
+    limits = config.load_execution_limits(p)
+    assert limits.max_queries_per_source_country == 3
+
+
+def test_execution_limits_max_queries_per_source_country_explicit_value(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "execution_limits.yaml"
+    p.write_text(
+        """
+max_countries_per_run: 6
+max_pages_per_source_country: 3
+results_per_page: 50
+request_timeout_seconds: 15
+max_retries: 2
+max_jobs_processed_per_run: null
+max_queries_per_source_country: 5
+""",
+        encoding="utf-8",
+    )
+    limits = config.load_execution_limits(p)
+    assert limits.max_queries_per_source_country == 5
+
+
+def test_execution_limits_rejects_non_positive_max_queries_per_source_country(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "execution_limits.yaml"
+    p.write_text(
+        """
+max_countries_per_run: 6
+max_pages_per_source_country: 3
+results_per_page: 50
+request_timeout_seconds: 15
+max_retries: 2
+max_jobs_processed_per_run: null
+max_queries_per_source_country: 0
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_execution_limits(p)
+
+
+def test_execution_limits_packaged_template_sets_max_queries_per_source_country(
+    tmp_path: Path,
+) -> None:
+    limits = config.load_execution_limits(data_dir=tmp_path / "empty-data-dir")
+    assert limits.max_queries_per_source_country == 3
+
+
 def test_scoring_weights_must_sum_to_one(tmp_path: Path) -> None:
     p = tmp_path / "scoring_weights.yaml"
     p.write_text(
