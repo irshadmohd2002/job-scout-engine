@@ -1,0 +1,51 @@
+# Company watchlist — identifies specific companies to inspect on a
+# watchlist-scoped ATS-feed source (Greenhouse, Lever). `job-scout init`
+# copies this template to company_watchlist.yaml in your own per-user data
+# directory; an empty `companies: []` list is valid and common.
+#
+# This is NOT the source registry (source_registry.yaml). The registry
+# describes whether a source may be accessed at all (compliance/approval
+# state, capabilities); this file only says which companies to look at
+# *within* an already-approved watchlist-scoped source. Listing a company
+# here does not make Greenhouse or Lever executable — that still requires
+# the corresponding source_registry.yaml entry's approval_status to be
+# promoted to `approved` by you, after reviewing that source's current
+# terms yourself (CLAUDE.md hard constraint 1), and the corresponding
+# adapter to exist (Greenhouse/Lever adapters are not implemented yet).
+#
+# Fields:
+#   company_name          Human-readable display name (identity only — not
+#                          used for API routing).
+#   source_id              Which source_registry.yaml entry this entry is
+#                          for. Today's watchlist-scoped source_ids are
+#                          greenhouse_public_feeds and lever_public_postings
+#                          — must match a source_id in your source_registry.yaml.
+#   external_company_key  That source's own public routing identifier for
+#                          the company's jobs feed — a Greenhouse board
+#                          token, or a Lever company/site slug. This is
+#                          NOT a display name, NOT an internal database ID,
+#                          and NOT a credential — it is part of a public
+#                          URL any visitor could construct, e.g.
+#                          https://boards-api.greenhouse.io/v1/boards/<external_company_key>/jobs
+#                          or https://api.lever.co/v0/postings/<external_company_key>.
+#   priority               Relative priority among watchlist entries (higher
+#                          = more important), same convention as
+#                          source_registry.yaml's `priority`.
+#   notes                  Optional free-text note.
+#
+# The two entries below are illustrative placeholders only — replace them
+# with your own target companies' real board tokens/slugs, or delete them
+# and leave `companies: []`.
+
+companies:
+  - company_name: "Example Company One"
+    source_id: greenhouse_public_feeds
+    external_company_key: examplecompanyone
+    priority: 50
+    notes: "Illustrative Greenhouse-shaped entry — replace with a real board token."
+
+  - company_name: "Example Company Two"
+    source_id: lever_public_postings
+    external_company_key: examplecompanytwo
+    priority: 40
+    notes: "Illustrative Lever-shaped entry — replace with a real company slug."

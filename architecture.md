@@ -207,9 +207,29 @@ to `unknown`, `likely`, or `confirmed_no`, rarely `confirmed_yes`.
 `jobs_duplicate`, `errors: list[str]`.
 
 ### 2.14 Reserved for later milestones (schema defined now, not written to in M1)
-`NotificationRecord`, `UserFeedback`, `ApplicationStatus`, `SourcePerformance`,
-`CompanyWatchlistEntry`. Defining these now means the repository interface
-(§4) does not need a breaking change when they're implemented.
+`NotificationRecord`, `UserFeedback`, `ApplicationStatus`, `SourcePerformance`.
+Defining these now means the repository interface (§4) does not need a
+breaking change when they're implemented.
+
+`CompanyWatchlistEntry` is no longer purely reserved as of Milestone 2
+Deliverable 5 step 6: `company_name: str`, `source_id: str`,
+`external_company_key: str`, `priority: int`, `notes: str | None`.
+`source_id` names which `SourceRegistryEntry` a watchlist entry is for (the
+watchlist-scoped ATS-feed sources' own ids, e.g. `greenhouse_public_feeds` /
+`lever_public_postings`); `external_company_key` is that source's own public
+routing identifier for the company's jobs feed (a Greenhouse board token, a
+Lever company/site slug) — never a display name, internal ID, or
+credential. This model is a YAML-first config surface
+(`company_watchlist.yaml`, `config.py::load_company_watchlist`,
+`resources/templates/company_watchlist.example.yaml` — see §15.2/15.3), not
+a `JobRepository`-persisted model (decisions.md D-009's "no database copy of
+YAML-first config" still applies). It identifies *which companies* to
+inspect within an already-approved watchlist-scoped source; it does not
+itself gate access — that stays the source registry's
+`approval_status`/`ComplianceGate` job (§7). Nothing reads this model at
+runtime yet: no adapter exists to fan out over it (Greenhouse/Lever adapters
+are Milestone 2 Deliverable 5 steps 7/8) and the query planner (§6) does not
+consume it either.
 
 ## 3. Source-adapter contract
 
@@ -837,8 +857,9 @@ document.
 src/job_scout/
 ├── __init__.py
 ├── config.py            # env + YAML loading for all config (candidate profile,
-│                         # search profiles, source registry, ExecutionLimits),
-│                         # validation, specific error messages
+│                         # search profiles, source registry, ExecutionLimits,
+│                         # company watchlist), validation, specific error
+│                         # messages
 ├── countries.py          # ISO country → region lookup (§5)
 ├── models.py              # every Pydantic model in §2 (Location through
 │                          # SourceRun) — one file; see rationale below
@@ -1030,6 +1051,7 @@ class AppPaths(BaseModel):
     execution_limits_path: Path
     scoring_weights_path: Path
     source_scoring_weights_path: Path
+    company_watchlist_path: Path  # Milestone 2 Deliverable 5 step 6
     environment_file_path: Path | None
 ```
 
@@ -1045,14 +1067,19 @@ over anything `AppPaths` computes — they are resolved in `cli.py`, not
 
 ### 15.2 Packaged templates (`src/job_scout/resources/`)
 
-`src/job_scout/resources/templates/` ships the six canonical, generic config
+`src/job_scout/resources/templates/` ships the canonical, generic config
 templates (candidate profile, search profiles, source registry, execution
-limits, scoring weights, source scoring weights) as package data, read via
+limits, scoring weights, source scoring weights, and — as of Milestone 2
+Deliverable 5 step 6 — company watchlist) as package data, read via
 `importlib.resources` (`job_scout.resources.template_text(name)`). This is
 the *only* copy of these templates (D-021) — `config/*.example.yaml` no
 longer exists. `pyproject.toml`'s `[tool.hatch.build.targets.wheel]`/
 `[tool.hatch.build.targets.sdist]` configuration ensures they're included in
-editable installs, wheels, and sdists alike.
+editable installs, wheels, and sdists alike. Unlike execution limits/scoring
+weights, `company_watchlist.example.yaml` has no runtime load-time fallback
+in `config.py` (§2.14) — it is only ever copied by `job-scout init`, the
+same one-time-copy-only treatment as candidate profile/search
+profiles/source registry.
 
 ### 15.3 `job-scout init` (`src/job_scout/bootstrap.py`)
 
@@ -1065,7 +1092,8 @@ otherwise). It never creates `.env` or any credential value (D-019). It is
 idempotent and side-effect-free on a repeated run beyond re-verifying the
 database. `cli.py`'s `init` command surfaces `InitResult` as: directories/
 files created, files skipped (already present), and guidance on which files
-to edit and that credentials are supplied separately.
+to edit and that credentials are supplied separately. Seven templates are
+copied as of Milestone 2 Deliverable 5 step 6 (was six through Milestone 1.1).
 
 ### 15.4 Environment (`.env`) resolution
 

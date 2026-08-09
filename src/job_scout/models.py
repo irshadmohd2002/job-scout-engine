@@ -630,6 +630,23 @@ class SourcePerformance(BaseModel):
 
 
 class CompanyWatchlistEntry(BaseModel):
+    """One company to watch on a watchlist-scoped ATS-feed source
+    (architecture.md section 2.14; Milestone 2 Deliverable 5 step 6).
+
+    `source_id` names which `SourceRegistryEntry` (source_registry.yaml)
+    this entry is for — the same values that registry uses, e.g.
+    `greenhouse_public_feeds` / `lever_public_postings`. `external_company_key`
+    is that source's own routing identifier for the company's public jobs
+    feed (a Greenhouse board token, a Lever company/site slug) — not a
+    display name, not an internal ID, and never a credential; `company_name`
+    remains the separate human-readable identity field. Listing a company
+    here does not make its source executable: the source's own
+    `SourceRegistryEntry.approval_status` still gates that (CLAUDE.md hard
+    constraint 1), and no adapter reads this model yet (Greenhouse/Lever
+    adapters land in Milestone 2 Deliverable 5 steps 7/8)."""
+
     company_name: str
+    source_id: str
+    external_company_key: str
     priority: int
     notes: str | None = None

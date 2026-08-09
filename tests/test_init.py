@@ -29,10 +29,11 @@ def test_first_run_creates_expected_directories_and_files(tmp_path: Path) -> Non
     assert app_paths.execution_limits_path.exists()
     assert app_paths.scoring_weights_path.exists()
     assert app_paths.source_scoring_weights_path.exists()
+    assert app_paths.company_watchlist_path.exists()
     assert app_paths.database_path.exists()
 
     assert len(result.created_dirs) >= 4
-    assert len(result.created_files) == 6
+    assert len(result.created_files) == 7
     assert result.skipped_files == []
     assert result.database_created is True
 
@@ -59,6 +60,19 @@ def test_existing_config_file_is_never_overwritten(tmp_path: Path) -> None:
     assert app_paths.candidate_profile_path.read_text(encoding="utf-8") == custom_content
     assert app_paths.candidate_profile_path in result.skipped_files
     assert app_paths.candidate_profile_path not in result.created_files
+
+
+def test_existing_company_watchlist_is_never_overwritten(tmp_path: Path) -> None:
+    app_paths = resolve_app_paths(tmp_path / "data")
+    app_paths.config_dir.mkdir(parents=True)
+    custom_content = "companies:\n  - company_name: my-real-company\n"
+    app_paths.company_watchlist_path.write_text(custom_content, encoding="utf-8")
+
+    result = run_init(app_paths)
+
+    assert app_paths.company_watchlist_path.read_text(encoding="utf-8") == custom_content
+    assert app_paths.company_watchlist_path in result.skipped_files
+    assert app_paths.company_watchlist_path not in result.created_files
 
 
 def test_partial_installation_is_completed_safely(tmp_path: Path) -> None:
@@ -135,6 +149,7 @@ def test_generated_configuration_loads_successfully(tmp_path: Path) -> None:
     source_scoring_weights = config.load_source_scoring_weights(
         app_paths.source_scoring_weights_path
     )
+    watchlist = config.load_company_watchlist(app_paths.company_watchlist_path)
 
     assert candidate_profile.candidate_id
     assert "example-profile" in search_profiles
@@ -142,3 +157,5 @@ def test_generated_configuration_loads_successfully(tmp_path: Path) -> None:
     assert execution_limits.max_countries_per_run > 0
     assert abs(sum(scoring_weights.component_weights().values()) - 1.0) < 1e-6
     assert abs(sum(source_scoring_weights.component_weights().values()) - 1.0) < 1e-6
+    assert len(watchlist) > 0
+    assert all(entry.external_company_key for entry in watchlist)

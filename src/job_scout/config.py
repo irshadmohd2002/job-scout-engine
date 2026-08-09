@@ -1,11 +1,11 @@
 """Configuration loading and validation.
 
 Env + YAML loading for every config surface: CandidateProfile, SearchProfile,
-SourceRegistryEntry, ExecutionLimits, ScoringWeights, and the .env-backed
-environment configuration. All errors raise ConfigError, which the CLI
-catches to exit cleanly with a concise, actionable message — never a
-traceback, never a secret value (architecture.md section 12 module layout;
-CLAUDE.md "Configuration requirements").
+SourceRegistryEntry, ExecutionLimits, ScoringWeights, CompanyWatchlistEntry,
+and the .env-backed environment configuration. All errors raise ConfigError,
+which the CLI catches to exit cleanly with a concise, actionable message —
+never a traceback, never a secret value (architecture.md section 12 module
+layout; CLAUDE.md "Configuration requirements").
 
 Milestone 1.1 (architecture.md section 15): default paths for every config
 file now resolve via `paths.resolve_app_paths()` (platformdirs-based, not
@@ -27,7 +27,12 @@ import yaml
 from dotenv import dotenv_values
 from pydantic import BaseModel, ValidationError, field_validator
 
-from job_scout.models import CandidateProfile, SearchProfile, SourceRegistryEntry
+from job_scout.models import (
+    CandidateProfile,
+    CompanyWatchlistEntry,
+    SearchProfile,
+    SourceRegistryEntry,
+)
 from job_scout.paths import resolve_app_paths
 from job_scout.resources import template_text
 
@@ -200,6 +205,43 @@ def load_source_registry(
             )
         seen.add(entry.source_id)
     return parsed.sources
+
+
+# --- CompanyWatchlistEntry ---------------------------------------------------
+# Milestone 2 Deliverable 5 step 6 (MILESTONE_2.md "config.py"): user-specific
+# like candidate_profile/search_profiles/source_registry above — no
+# packaged-template fallback (company_watchlist.yaml is hand-edited,
+# per-user data, not a generic default like execution_limits.yaml). Config
+# surface only: nothing here reads a network resource, constructs an
+# adapter, or feeds the query planner (MILESTONE_2.md Deliverable 5 steps
+# 7/8 own that).
+
+
+class _CompanyWatchlistFile(BaseModel):
+    companies: list[CompanyWatchlistEntry] = []
+
+
+def load_company_watchlist(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> list[CompanyWatchlistEntry]:
+    resolved = path or resolve_app_paths(data_dir_override=data_dir).company_watchlist_path
+    data = _read_yaml(resolved)
+    try:
+        parsed = _CompanyWatchlistFile.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError.from_validation_error(resolved, exc) from exc
+    seen: set[tuple[str, str]] = set()
+    for entry in parsed.companies:
+        key = (entry.source_id, entry.external_company_key)
+        if key in seen:
+            raise ConfigError(
+                f"Duplicate watchlist entry for source_id '{entry.source_id}' "
+                f"external_company_key '{entry.external_company_key}'.",
+                file=resolved,
+                field="companies[].external_company_key",
+            )
+        seen.add(key)
+    return parsed.companies
 
 
 # --- ExecutionLimits ----------------------------------------------------------

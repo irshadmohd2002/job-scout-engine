@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from job_scout import config
+from job_scout.models import CompanyWatchlistEntry
 
 VALID_CANDIDATE_YAML = """
 candidate_id: default-candidate
@@ -243,6 +244,125 @@ def test_non_adzuna_non_reed_template_entries_have_no_explicit_capabilities_bloc
         entry = SourceRegistryEntry.model_validate(raw_source)
         # Inherits the inert, approved-by-D-041 default — not a verified claim.
         assert entry.capabilities == SourceCapabilities()
+
+
+VALID_COMPANY_WATCHLIST_YAML = """
+companies:
+  - company_name: "Alpha Example Co"
+    source_id: greenhouse_public_feeds
+    external_company_key: alphaexampleco
+    priority: 50
+  - company_name: "Beta Example Co"
+    source_id: lever_public_postings
+    external_company_key: betaexampleco
+    priority: 40
+    notes: "second entry"
+"""
+
+
+def test_load_company_watchlist(tmp_path: Path) -> None:
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text(VALID_COMPANY_WATCHLIST_YAML, encoding="utf-8")
+    entries = config.load_company_watchlist(p)
+    assert entries[0].company_name == "Alpha Example Co"
+    assert entries[0].source_id == "greenhouse_public_feeds"
+    assert entries[0].external_company_key == "alphaexampleco"
+
+
+def test_load_company_watchlist_preserves_order(tmp_path: Path) -> None:
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text(VALID_COMPANY_WATCHLIST_YAML, encoding="utf-8")
+    entries = config.load_company_watchlist(p)
+    assert [e.company_name for e in entries] == ["Alpha Example Co", "Beta Example Co"]
+
+
+def test_load_company_watchlist_empty_list_is_valid(tmp_path: Path) -> None:
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text("companies: []\n", encoding="utf-8")
+    entries = config.load_company_watchlist(p)
+    assert entries == []
+
+
+def test_load_company_watchlist_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_company_watchlist(tmp_path / "does_not_exist.yaml")
+    assert "not found" in str(exc_info.value)
+
+
+def test_load_company_watchlist_malformed_yaml_raises(tmp_path: Path) -> None:
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text("companies: [unterminated\n", encoding="utf-8")
+    with pytest.raises(config.ConfigError):
+        config.load_company_watchlist(p)
+
+
+def test_load_company_watchlist_missing_required_field_raises(tmp_path: Path) -> None:
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text(
+        "companies:\n  - company_name: Alpha\n    priority: 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_company_watchlist(p)
+    assert exc_info.value.field is not None
+
+
+def test_load_company_watchlist_rejects_duplicate_source_and_key(tmp_path: Path) -> None:
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text(
+        VALID_COMPANY_WATCHLIST_YAML.rstrip()
+        + "\n  - company_name: \"Alpha Duplicate\"\n"
+        + "    source_id: greenhouse_public_feeds\n"
+        + "    external_company_key: alphaexampleco\n"
+        + "    priority: 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_company_watchlist(p)
+
+
+def test_load_company_watchlist_allows_same_key_across_different_sources(
+    tmp_path: Path,
+) -> None:
+    """Same external_company_key under two different source_ids is not a
+    duplicate — the (source_id, external_company_key) pair is the identity,
+    not external_company_key alone."""
+    p = tmp_path / "company_watchlist.yaml"
+    p.write_text(
+        "companies:\n"
+        "  - company_name: Alpha\n"
+        "    source_id: greenhouse_public_feeds\n"
+        "    external_company_key: samekey\n"
+        "    priority: 1\n"
+        "  - company_name: Alpha On Lever\n"
+        "    source_id: lever_public_postings\n"
+        "    external_company_key: samekey\n"
+        "    priority: 1\n",
+        encoding="utf-8",
+    )
+    entries = config.load_company_watchlist(p)
+    assert len(entries) == 2
+
+
+def test_packaged_company_watchlist_template_parses() -> None:
+    import yaml
+
+    from job_scout.resources import template_text
+
+    parsed = yaml.safe_load(template_text("company_watchlist.example.yaml"))
+    entries = [CompanyWatchlistEntry.model_validate(c) for c in parsed["companies"]]
+    assert len(entries) >= 2
+    source_ids = {e.source_id for e in entries}
+    assert "greenhouse_public_feeds" in source_ids
+    assert "lever_public_postings" in source_ids
+
+
+def test_packaged_company_watchlist_template_contains_no_secrets() -> None:
+    from job_scout.resources import template_text
+
+    raw = template_text("company_watchlist.example.yaml").lower()
+    for forbidden in ("api_key", "apikey", "secret", "token:", "password"):
+        assert forbidden not in raw
 
 
 def test_source_registry_entries_do_not_share_mutable_capability_state() -> None:

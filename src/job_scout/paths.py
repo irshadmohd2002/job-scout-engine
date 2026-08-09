@@ -42,6 +42,11 @@ class AppPaths(BaseModel):
     execution_limits_path: Path
     scoring_weights_path: Path
     source_scoring_weights_path: Path
+    # Milestone 2 Deliverable 5 step 6: user-specific like candidate_profile_path
+    # (no packaged-template fallback at load time — config.py's
+    # load_company_watchlist reads this path directly, MILESTONE_2.md
+    # "config.py" changes).
+    company_watchlist_path: Path
     environment_file_path: Path | None = None
 
 
@@ -82,5 +87,6 @@ def resolve_app_paths(
         execution_limits_path=config_dir / "execution_limits.yaml",
         scoring_weights_path=config_dir / "scoring_weights.yaml",
         source_scoring_weights_path=config_dir / "source_scoring_weights.yaml",
+        company_watchlist_path=config_dir / "company_watchlist.yaml",
         environment_file_path=root / ".env",
     )

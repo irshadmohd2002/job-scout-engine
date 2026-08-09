@@ -1,7 +1,7 @@
 """`job-scout init` (architecture.md section 15.3; decisions.md D-019/D-020).
 
 Idempotent, non-interactive bootstrap of a user's data directory: creates
-config/data/logs/cache, copies the six packaged templates to their real
+config/data/logs/cache, copies the packaged templates to their real
 filenames (never overwriting an existing file), and initialises the SQLite
 database. Never creates `.env` or any credential value — every user
 supplies their own (decisions.md D-019). This is a distribution
@@ -26,6 +26,7 @@ _TEMPLATE_TARGETS: tuple[tuple[str, str], ...] = (
     ("execution_limits.example.yaml", "execution_limits_path"),
     ("scoring_weights.example.yaml", "scoring_weights_path"),
     ("source_scoring_weights.example.yaml", "source_scoring_weights_path"),
+    ("company_watchlist.example.yaml", "company_watchlist_path"),
 )
 
 
