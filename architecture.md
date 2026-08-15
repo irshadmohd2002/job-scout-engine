@@ -226,10 +226,15 @@ a `JobRepository`-persisted model (decisions.md D-009's "no database copy of
 YAML-first config" still applies). It identifies *which companies* to
 inspect within an already-approved watchlist-scoped source; it does not
 itself gate access — that stays the source registry's
-`approval_status`/`ComplianceGate` job (§7). Nothing reads this model at
-runtime yet: no adapter exists to fan out over it (Greenhouse/Lever adapters
-are Milestone 2 Deliverable 5 steps 7/8) and the query planner (§6) does not
-consume it either.
+`approval_status`/`ComplianceGate` job (§7). The query planner (§6) never
+consumes it — `source_intelligence/query_planner.py` gates on
+`SourceCapabilities.company_filter` alone and always returns zero
+`PlannedQuery`s for such a source, regardless of watchlist contents. As of
+Milestone 2 Deliverable 5 step 7, `pipeline.py::run_once` reads this model
+at runtime for any selected source whose `SourceCapabilities.company_filter`
+is `True`: one `SourceAdapter` instance is constructed per matching
+`CompanyWatchlistEntry` and `fetch()`-ed once — see section 18. Lever (step
+8) will consume it the same way, once it exists.
 
 ## 3. Source-adapter contract
 
@@ -294,6 +299,17 @@ Reed's own published docs (no literal JSON response example, so response
 field-name casing is this project's best-effort camelCase inference from the
 docs' prose "Returns" labels, flagged for live confirmation via the new
 opt-in `tests/test_reed_integration.py`).
+
+Milestone 2 Deliverable 5 step 7 adds a third: `GreenhouseAdapter`
+(`sources/greenhouse.py`, `public_ats_feed`, ships `manual_review` in the
+packaged registry template — decisions.md D-047). It differs structurally
+from Adzuna/Reed in two documented ways rather than following their shape
+byte-for-byte: it makes exactly one HTTP request per `fetch()` call (the
+verified Job Board API contract documents no pagination parameters at all),
+and it is constructed once per `CompanyWatchlistEntry` — see section 18
+below for the full watchlist-fan-out design, which is the actual reason
+`SourceAdapter.fetch()`'s Protocol signature stays unchanged for a
+company_filter=True source.
 
 **Known limitation — truncated descriptions**: Adzuna's `/search` endpoint
 returns only a snippet of each job's description (their own docs state this
@@ -1280,3 +1296,62 @@ The invariant this correction establishes: `exact_phrase` and `any_of_words`
 queries for the same keywords no longer render into an identical Adzuna
 request (`test_exact_phrase_and_any_of_words_never_render_identical_requests`,
 `tests/test_adzuna_adapter.py`).
+
+## 18. Milestone 2 Deliverable 5 step 7: Greenhouse adapter + watchlist
+fan-out (implemented)
+
+`sources/greenhouse.py::GreenhouseAdapter` implements Greenhouse's public
+Job Board API (`GET /v1/boards/{board_token}/jobs`, no auth, no documented
+pagination — see §3). `pipeline.py::run_once` gained a second execution
+path, alongside step 4's planned-query fan-out, for any selected source
+whose `SourceRegistryEntry.capabilities.company_filter` is `True`:
+
+- For each `CompanyWatchlistEntry` whose `source_id` matches the selected
+  source, `run_once` constructs one fresh `SourceAdapter` via a new
+  `WatchlistAdapterFactory` (`Callable[[str, CompanyWatchlistEntry],
+  SourceAdapter | None]`, `pipeline.py::_default_watchlist_adapter_factory`
+  — the same shape as the existing `AdapterFactory`/
+  `_default_adapter_factory`, keyed additionally by the watchlist entry
+  since a company_filter=True source needs one adapter instance per
+  company, not one shared instance per source_id) and calls `.fetch()`
+  exactly once, passing through `SelectedSource.search_params` unchanged
+  (`GreenhouseAdapter.fetch()` ignores it — see §3).
+- Zero matching `CompanyWatchlistEntry` rows produces zero calls and **no**
+  `SourceRun` row for that source at all (MILESTONE_2.md R-10) — identical
+  in shape to the existing "zero `planned_queries` -> no `SourceRun`"
+  convention step 4 already established, just gated on watchlist matches
+  instead of query-planner output for this branch.
+- Both branches converge immediately after populating `raw_records:
+  list[RawJobRecord]` — aggregation, `SourceRun.jobs_fetched` accounting,
+  normalisation (`_NORMALIZERS["greenhouse_public_feeds"] =
+  normalize_greenhouse_record`), dedup, hard filters, pre-filter, Stage 5
+  scoring, and persistence are all the exact same shared code every other
+  source already uses; nothing downstream of `raw_records` branches on
+  `source_id` or on whether a source is watchlist-scoped.
+- The branch selector is `entry.capabilities.company_filter` — read from
+  the registry (decisions.md D-041's own stated mechanism), never a
+  `source_id` string check — so Lever (Deliverable 5 step 8) reuses this
+  same branch unmodified once its registry entry also ships
+  `company_filter=True`; only `_default_watchlist_adapter_factory`'s
+  per-source-id adapter-construction dispatch gains a new `elif` branch for
+  it, mirroring `_default_adapter_factory`'s existing shape.
+- `query_planner.py`/`source_intelligence/planner.py::build_plan` are
+  **unchanged** by this step — `build_planned_queries` already returned
+  zero `PlannedQuery`s for `company_filter=True` sources (step 3);
+  `estimated_request_count`'s existing `len(supported) *
+  len(planned_queries) * max_pages` arithmetic therefore still reads `0`
+  for Greenhouse regardless of watchlist size — a known, pre-existing
+  under-report acknowledged in decisions.md D-047, not a regression this
+  step introduces or was asked to fix.
+
+`normalize_greenhouse_record` (`pipeline.py`) follows the `_NORMALIZERS`
+dict-dispatch pattern unchanged (D-040): `Location.country` is always `""`
+(Greenhouse's list-jobs response has no structured country field — see
+decisions.md D-047 for why this is never inferred from the freeform
+`location.name`, and its hard-filter consequence); `posted_at`,
+`employment_type`, and every salary field are always `None` (not documented
+on this endpoint, D-047); `company` is read from
+`raw_payload["_company_name"]`, stashed by `GreenhouseAdapter._to_raw_record`
+from the `CompanyWatchlistEntry` that produced the fetch (Greenhouse's own
+response never names the company); `raw_url` is Greenhouse's own
+`absolute_url` — a genuine canonical application URL, unlike Reed's.

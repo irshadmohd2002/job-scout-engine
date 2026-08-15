@@ -29,24 +29,24 @@
 # are identical to SourceCapabilities' own defaults, not a behaviour
 # change.
 #
-# IMPORTANT — every OTHER entry below (greenhouse_public_feeds,
-# lever_public_postings, and every illustrative government/portal/email
-# example) has no explicit `capabilities` block and therefore inherits the
-# same Adzuna-shaped default via Pydantic's field default. This is a
-# deliberate, approved backward-compatibility choice (decisions.md D-041 —
-# "every existing registry entry ... keeps validating and behaving
-# unchanged"), NOT a verified capability claim for those sources: read it
-# as "unknown, inherited default," never as "confirmed to behave like
-# Adzuna." Nothing in Milestone 2 Task 1 reads `.capabilities` for
-# planning/execution yet, and every one of these entries is already
-# non-executable today regardless (manual_review/alert_only/
-# requires_authorisation/blocked), so this has no behavioural effect now.
-# Each real adapter gets its own explicit, verified `capabilities` block
-# when it's actually implemented (Milestone 2 Deliverable 5 steps 5/7/8) —
-# reed_api below is the first of these (decisions.md D-046); Greenhouse/
-# Lever's real shape will be `company_filter: true, keyword_search: false`,
-# the opposite of the inherited default shown above for
-# greenhouse_public_feeds/lever_public_postings today.
+# IMPORTANT — every OTHER entry below (lever_public_postings, and every
+# illustrative government/portal/email example) has no explicit
+# `capabilities` block and therefore inherits the same Adzuna-shaped default
+# via Pydantic's field default. This is a deliberate, approved
+# backward-compatibility choice (decisions.md D-041 — "every existing
+# registry entry ... keeps validating and behaving unchanged"), NOT a
+# verified capability claim for those sources: read it as "unknown,
+# inherited default," never as "confirmed to behave like Adzuna." Nothing in
+# Milestone 2 Task 1 reads `.capabilities` for planning/execution for these
+# entries, and every one of them is already non-executable today regardless
+# (manual_review/alert_only/requires_authorisation/blocked), so this has no
+# behavioural effect now. Each real adapter gets its own explicit, verified
+# `capabilities` block when it's actually implemented (Milestone 2
+# Deliverable 5 steps 5/7/8) — reed_api (decisions.md D-046) and now
+# greenhouse_public_feeds (decisions.md D-047) below; Lever's real shape
+# will be the same `company_filter: true, keyword_search: false` as
+# Greenhouse's, the opposite of the inherited default still shown above for
+# lever_public_postings today.
 
 sources:
   - source_id: adzuna_api
@@ -196,10 +196,52 @@ sources:
     required_setup_actions:
       - "Build priority-company watchlist with Greenhouse board tokens"
       - "Promote to approved once watchlist + polling cadence are confirmed"
-    adapter_ref: null # not implemented until watchlist exists (post-M1)
+    adapter_ref: greenhouse
     reliability_score: 0.85
     historical_match_count: null
     duplicate_rate: null
+    # Verified against GreenhouseAdapter's actual contract (decisions.md
+    # D-047, against the official Job Board API docs — grnhse/
+    # greenhouse-api-docs, "List jobs" — at implementation time): the
+    # list-jobs endpoint has no keyword/query parameter of any kind
+    # (keyword_search: false, exact_phrase_search: false), no
+    # location/country/city/industry/remote filter parameter
+    # (location_filter/country_filter/city_filter/industry_filter/
+    # remote_filter: false — geographic_coverage above is a
+    # registry/planner concept, never an API-side filter, same precedent as
+    # reed_api); `company_filter: true` because this source is genuinely
+    # watchlist-scoped — one fetch is implicitly one company's board,
+    # exactly D-041's documented meaning, not a keyword source with an
+    # incidental company parameter; no salary field is ever returned by
+    # this endpoint (salary_data: false — pay_input_ranges exists only on
+    # the single-job detail endpoint behind a parameter this adapter never
+    # calls); `content` (the description) is a single freeform HTML string,
+    # not structured (structured_description: false); no page/per_page/
+    # offset/cursor parameter is documented anywhere on this endpoint —
+    # every job post is returned in one response (pagination: false,
+    # page_size_control: false); no posting-date filter parameter is
+    # documented (posting_date_filter: false); `id` is confirmed a stable
+    # per-post identifier by the docs themselves (stable_external_job_id:
+    # true); `absolute_url` is a genuine, documented canonical link to the
+    # job posting (canonical_application_url: true) — unlike reed_api,
+    # never fabricated.
+    capabilities:
+      keyword_search: false
+      exact_phrase_search: false
+      location_filter: false
+      country_filter: false
+      city_filter: false
+      industry_filter: false
+      company_filter: true
+      remote_filter: false
+      salary_data: false
+      structured_description: false
+      pagination: false
+      page_size_control: false
+      posting_date_filter: false
+      stable_external_job_id: true
+      canonical_application_url: true
+      max_recommended_queries_per_request: null
 
   - source_id: lever_public_postings
     name: "Lever public postings API"

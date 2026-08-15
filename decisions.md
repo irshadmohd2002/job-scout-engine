@@ -1758,3 +1758,169 @@ verify against the actual official documentation, degrade honestly to
 `None`/`False`/absent rather than fabricate when the documentation doesn't
 support a claim, and extend existing narrow mechanisms by the smallest
 matching increment rather than generalising ahead of a second real need.
+
+### D-047: `GreenhouseAdapter` (Milestone 2 Deliverable 5 step 7) — one
+adapter instance per watchlisted board, not one shared adapter looping
+internally; `pipeline.py` gains a second, narrow watchlist-fan-out path
+gated on `SourceCapabilities.company_filter` (data-driven, not a
+`source_id` string check); `Location.country` stays `""` (honest unknown),
+never parsed from Greenhouse's freeform `location.name`
+**Decision**: `sources/greenhouse.py::GreenhouseAdapter` implements
+Greenhouse's public Job Board API (`GET https://boards-api.greenhouse.io/
+v1/boards/{board_token}/jobs`, verified against the official docs —
+`grnhse/greenhouse-api-docs`, "Jobs" -> "List jobs" — at implementation
+time), following `AdzunaAdapter`/`ReedAdapter`'s structural shape
+(`is_configured()`, typed exceptions from `sources/base.py`) with two
+genuine, documented differences from both:
+1. **No pagination.** The verified docs document no `page`/`per_page`/
+   `offset`/`cursor` parameter at all — the endpoint returns every open
+   job post for a board in one response (`{"jobs": [...], "meta":
+   {"total": N}}`). `fetch()` therefore makes exactly one HTTP request,
+   never a page loop; `?content=true` is always sent (a real, documented,
+   zero-extra-request flag) so the response actually includes each job's
+   description — omitting it would silently make every fetched job
+   unscoreable.
+2. **One adapter instance per watchlisted company, constructed with
+   `board_token`/`company_name`, not one shared adapter called per query.**
+   `MILESTONE_2.md`'s own query-planning design (`query_planner.py::
+   build_planned_queries`) already returns zero `PlannedQuery`s for any
+   source whose `SourceCapabilities.company_filter=True` — Greenhouse's
+   real shape (decisions.md D-041) — so `pipeline.py::run_once`'s existing
+   step-4 "one `adapter.fetch()` call per `PlannedQuery`" loop can never
+   drive it; every company_filter=True source would silently fetch nothing,
+   forever, without a second execution path. `run_once` therefore gained a
+   second branch, selected by `entry.capabilities.company_filter` (read
+   from the registry, exactly D-041's own stated mechanism — never a
+   `source_id == "greenhouse_public_feeds"` string check, so step 8's Lever
+   adapter reuses this same branch unmodified once it also ships
+   `company_filter=True`): for each `CompanyWatchlistEntry` whose
+   `source_id` matches the selected source, `pipeline.py` constructs one
+   fresh adapter via a new `WatchlistAdapterFactory` (mirrors the existing
+   `AdapterFactory`'s per-source-id shape, but keyed by
+   `(source_id, CompanyWatchlistEntry)` instead of `source_id` alone — a
+   second, narrow, typed factory rather than generalising the first one
+   into something pluggable, CLAUDE.md hard constraint 9) and calls
+   `.fetch()` exactly once. Both branches converge back into the same
+   aggregation/normalisation/dedup/scoring code immediately after —
+   `raw_records: list[RawJobRecord]` is populated by whichever branch ran,
+   and everything downstream of that point is unchanged and shared. Zero
+   matching watchlist entries produces zero calls and no `SourceRun` row at
+   all (R-10, MILESTONE_2.md) — the exact same "nothing happened, no row"
+   convention `run_once` already used for zero `planned_queries`.
+   `SourceAdapter.fetch(params: SourceSearchParams)`'s Protocol signature is
+   unchanged; `GreenhouseAdapter.fetch()` accepts and ignores `params`
+   entirely (documented in its own module docstring) rather than the
+   alternative of adding a new field to `SourceSearchParams` to carry the
+   board token through the existing single-adapter-per-source path (see
+   Alternatives).
+**Company name**: Greenhouse's list-jobs response never includes a company
+name at all (one board is implicitly one company) — the only source of
+truth is the `CompanyWatchlistEntry.company_name` that produced the fetch.
+`GreenhouseAdapter.__init__` takes `company_name` alongside `board_token`
+and `_to_raw_record` stashes it onto `raw_payload["_company_name"]`, the
+same non-API-native-context-stash pattern `AdzunaAdapter`/`ReedAdapter`
+already use for `_query_country` — real, known-correct context describing
+which fetch produced this record, not fabricated job data.
+**`Location.country` stays `""` (never parsed from `location.name`)**:
+Greenhouse's list-jobs response provides exactly one freeform location
+signal per job, `location.name` (e.g. "London", "Remote - US") — no
+structured country code anywhere in the documented response, even with
+`?content=true`. `Location.country: str` is a required field, so some
+value must be supplied; this task's own explicit instruction ("do not
+fabricate... or other fields when the source does not provide them", "be
+explicit about ... uncertainty rather than silently guessing") rules out
+inferring an ISO country from free text via a name-matching heuristic, even
+though `countries.py` has region data that could technically back one — a
+heuristic string match against values like "Remote - US"/"EMEA"/"NYC" is
+exactly the class of unreliable inference the project's evidence bar (D-016/
+D-027/D-028/D-031, restated in D-046) already forbids. Consequence,
+documented rather than silently absorbed: `matching/hard_filters.py::
+evaluate_hard_filters` treats a falsy `Location.country` as unknown and
+rejects the job whenever `SearchProfile.included_countries` is non-empty —
+so a Greenhouse job is only ever hard-filtered on country when the running
+search profile actually scopes by country, which is common. This is an
+honest reflection of what Greenhouse's public API genuinely does not tell
+this project, not a bug this task silently works around; a future,
+separately-scoped improvement could derive a coarser signal from the
+`offices[].location` array (present under `?content=true`) via a verified
+name/code mapping, but that is new inference logic this task was not asked
+to build and is left as acknowledged debt.
+**Fields left `None`, and why**: `posted_at` — only `updated_at`
+(last-modified) is present; never conflated with a posting date (D-040's
+rule, same treatment D-046 already gave Reed's missing posted-date field).
+`employment_type` — no such field is documented anywhere on this endpoint.
+`salary_min`/`salary_max`/`salary_currency` — `pay_input_ranges` exists only
+on the single-job detail endpoint behind `?pay_transparency=true`, which
+this adapter never calls, for the same "no unbounded per-result endpoint
+fan-out" reason D-046 already established for Reed's Details endpoint.
+**Malformed job entries**: a job post missing its own `id` field is skipped
+individually (cannot become a valid `RawJobRecord.external_id`), rather than
+crashing the whole board's fetch over one bad record or fabricating an
+identifier.
+**`SourceCapabilities`** (packaged template, `source_registry.example.yaml`):
+`company_filter: true`, `keyword_search: false`, `exact_phrase_search:
+false`, `location_filter: false`, `country_filter: false`, `city_filter:
+false`, `industry_filter: false`, `remote_filter: false` (no such
+parameters documented, `geographic_coverage` stays a registry/planner
+concept only, same precedent D-046 already established for `reed_api`),
+`salary_data: false`, `structured_description: false` (`content` is one
+freeform HTML string), `pagination: false`, `page_size_control: false` (no
+such parameters documented at all — a first for this project's three real
+adapters), `posting_date_filter: false`, `stable_external_job_id: true`
+(the docs themselves state `id` is the stable per-post identifier),
+`canonical_application_url: true` (`absolute_url` is a genuine documented
+link, unlike Reed's `reed_api`). `adapter_ref: greenhouse`; `approval_status`
+stays `manual_review` (CLAUDE.md hard constraint 1 — never approved by
+default).
+**Estimated request count under-reports for company_filter=True sources**:
+`source_intelligence/planner.py::build_plan`'s existing
+`estimated_request_count = len(supported) * len(planned_queries) *
+max_pages` arithmetic yields `0` for Greenhouse regardless of watchlist
+size, because `len(planned_queries)` is always `0` for a company_filter=True
+source (query_planner.py, unchanged by this task). This is a pre-existing
+consequence of step 3's design, not introduced by this task, and fixing it
+would require touching either `query_planner.py` or `planner.py`'s
+arithmetic — both explicitly out of this task's scope (the task instruction
+says not to modify `query_planner.py`, and `planner.py`'s own
+`estimated_request_count` formula is untouched precedent this task does not
+own). Documented here as acknowledged debt, not silently absorbed; `job-scout
+plan`'s displayed estimate for a watchlist-populated Greenhouse entry will
+read `0` even though `run-once` will actually issue one request per
+watchlisted company.
+**Alternatives**: Adding a `company_key`/`board_token`-shaped optional field
+to `SourceSearchParams` and keeping one shared adapter instance per source,
+routed through the existing single-arg `AdapterFactory` with per-call
+`model_copy` substitution (the same mechanism step 4 already uses for
+`keywords`/`keyword_mode`) — considered, and structurally closer to the
+existing query-fan-out shape, but rejected: it would grow the shared,
+adapter-agnostic `SourceSearchParams` model with a field only two adapters
+(Greenhouse, Lever) ever read, and — unlike `keyword_mode`, which every
+adapter already receives and either uses or ignores by design — a
+board-token-shaped field has no meaning for keyword-search sources at all,
+so it reads as a company_filter-source-specific parameter smuggled into a
+supposedly source-agnostic model. Constructing one adapter instance per
+company, the same way `board_token`/`company_name` already have to reach
+the adapter as constructor config (there is no other channel for them),
+keeps `SourceSearchParams` exactly as `MILESTONE_2.md`'s own "Architecture
+changes" section says it should stay for this step
+("`SourceAdapter.fetch()`'s Protocol signature ... unchanged — the fan-out
+happens at the pipeline call site, not inside the adapter"). Hardcoding
+`if selected.source_id == "greenhouse_public_feeds"` in `pipeline.py`
+instead of reading `entry.capabilities.company_filter` (rejected — CLAUDE.md
+hard constraint 6 explicitly warns against a role/source assuming one fixed
+set of sources, and D-041 already established `company_filter` as exactly
+this generic, data-driven signal; a `source_id` string check would also mean
+step 8's Lever adapter needs its own near-duplicate branch instead of
+falling into the same one). Parsing/guessing `Location.country` from
+`location.name` or the `offices[]` array now (rejected — see "`Location
+.country` stays `""`" above). Mapping `updated_at` -> `posted_at` (rejected
+— a last-modified timestamp is not a posting date; conflating the two would
+misrepresent job freshness for any listing edited after its original post
+date).
+**Why**: Same evidence-bar-first, smallest-safe-change discipline as D-046
+— verify the actual documented contract, degrade honestly to `None`/`""`/
+skipped rather than fabricate or infer when the documentation doesn't
+support a claim, and extend existing narrow mechanisms (a second factory
+shape, a capability-gated branch) by the smallest matching increment rather
+than generalising `AdapterFactory` itself or reaching for a new
+`SourceAdapter` method.

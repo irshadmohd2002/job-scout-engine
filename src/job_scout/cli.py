@@ -16,6 +16,7 @@ from job_scout.config import (
     SourceScoringWeights,
     get_search_profile,
     load_candidate_profile,
+    load_company_watchlist,
     load_env,
     load_execution_limits,
     load_scoring_weights,
@@ -24,6 +25,7 @@ from job_scout.config import (
 )
 from job_scout.models import (
     CandidateProfile,
+    CompanyWatchlistEntry,
     Job,
     MatchResult,
     NotificationTier,
@@ -171,6 +173,29 @@ def _load_planning_inputs(
     return _PlanningInputs(
         candidate_profile, search_profile, registry, execution_limits, source_scoring_weights
     )
+
+
+def _load_company_watchlist_for_run(
+    path: Path | None, *, data_dir: Path | None
+) -> list[CompanyWatchlistEntry]:
+    # Milestone 2 Deliverable 5 step 7 (decisions.md D-047):
+    # company_watchlist.yaml is a new, optional-until-populated config
+    # surface (`config.py::load_company_watchlist` docstring: "no
+    # packaged-template fallback", CLAUDE.md hard constraint 8 keeps it
+    # user-specific and gitignored, never bundled). An explicit
+    # --company-watchlist flag is always loaded strictly (a typo there
+    # should fail loudly, same as every other explicit config flag); the
+    # default resolved location is optional so every pre-M2 user/test
+    # config directory without this file yet keeps `run-once` working
+    # unchanged for every non-watchlist-scoped source (R-10: zero watchlist
+    # entries -> zero calls -> zero jobs is already the correct, valid
+    # outcome for Greenhouse/Lever, not an error).
+    if path is not None:
+        return load_company_watchlist(path, data_dir=data_dir)
+    resolved = resolve_app_paths(data_dir_override=data_dir).company_watchlist_path
+    if not resolved.exists():
+        return []
+    return load_company_watchlist(resolved, data_dir=data_dir)
 
 
 def _format_plan_human(plan: SearchExecutionPlan) -> str:
@@ -373,6 +398,14 @@ def run_once_command(
     candidate_profile: Path | None = typer.Option(None, "--candidate-profile"),
     search_profiles: Path | None = typer.Option(None, "--search-profiles"),
     source_registry: Path | None = typer.Option(None, "--source-registry"),
+    company_watchlist_path: Path | None = typer.Option(
+        None,
+        "--company-watchlist",
+        help="Path to company_watchlist.yaml (default: resolved data directory's "
+        "company_watchlist.yaml if present, else no watchlisted companies — "
+        "watchlist-scoped sources like Greenhouse simply fetch nothing, per "
+        "MILESTONE_2.md R-10).",
+    ),
     execution_limits: Path | None = typer.Option(None, "--execution-limits"),
     scoring_weights_path: Path | None = typer.Option(None, "--scoring-weights"),
     source_scoring_weights_path: Path | None = typer.Option(None, "--source-scoring-weights"),
@@ -416,6 +449,9 @@ def run_once_command(
         )
         scoring_weights = load_scoring_weights(scoring_weights_path, data_dir=data_dir)
         env = load_env(env_path, data_dir=data_dir)
+        company_watchlist = _load_company_watchlist_for_run(
+            company_watchlist_path, data_dir=data_dir
+        )
     except ConfigError as exc:
         typer.echo(f"Configuration error: {exc}", err=True)
         raise typer.Exit(code=1) from None
@@ -460,6 +496,7 @@ def run_once_command(
             env=env,
             dry_run=dry_run,
             limit=limit,
+            company_watchlist=company_watchlist,
         )
 
     if json_output:
