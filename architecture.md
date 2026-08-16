@@ -354,6 +354,7 @@ class JobRepository(Protocol):
     def save_source_run(self, run: SourceRun) -> None: ...
     def save_match_result(self, result: MatchResult) -> None: ...
     def list_recent_jobs(self, since: datetime, limit: int = 200) -> list[Job]: ...
+    def list_provenance(self, job_id: str) -> list[SourceProvenance]: ...
 
     # Defined for interface stability; no-op or NotImplementedError-free stub
     # in M1's SQLite implementation until the relevant milestone lands.
@@ -366,9 +367,12 @@ class JobRepository(Protocol):
 
 M1 ships `SqliteJobRepository` implementing the first six methods fully
 (`jobs`, `source_provenance`, `source_runs`, `match_results`,
-`job_fingerprints` tables) with real schema. The remaining methods exist on the
-Protocol and have a table reserved in the SQLite schema, but the schema
-migration for them can lag — the *interface* is what must not change.
+`job_fingerprints` tables) with real schema. `list_provenance` was added in
+Milestone 2 Deliverable 5 step 9 (§20) — a read method over the
+already-existing `source_provenance` table, not a schema change. The
+remaining methods exist on the Protocol and have a table reserved in the
+SQLite schema, but the schema migration for them can lag — the *interface*
+is what must not change.
 
 **Config vs. database boundary**: `CandidateProfile`, `SearchProfile`, and
 `SourceRegistryEntry` are YAML-first in every milestone through M1; the
@@ -482,24 +486,37 @@ plan generation and execution in a long-lived process).
   doesn't change the schema.
 - `posted_date`: date-only, when the source provides it.
 
-Matching tiers, applied in order at ingestion:
-1. **Exact**: same `canonical_url` + `external_source_id` → same job. Merge
-   provenance, keep the earliest `posted_at`.
-2. **High-confidence cross-source duplicate**: same `normalized_company` +
-   `normalized_title` + `normalized_location` + identical
-   `description_fingerprint` → same underlying job posted to multiple sources.
-   Merge provenance.
-3. **Repost**: same company+title+location, *different* description
-   fingerprint, and existing job's `posted_at` is older than a configurable
-   gap (default 21 days) → new `Job` row, linked via `previous_job_id`, subject
-   to the repost notification policy (do not re-notify unless materially
-   changed or repost policy allows).
-4. Anything else → distinct job.
+Matching tiers, applied in order at ingestion (tiers 2 and 3 below were
+extended in Milestone 2 Deliverable 5 step 9 — see §20 for the full design;
+this section states the current, post-step-9 behaviour):
+1. **Exact, same source**: same `canonical_url` + `external_source_id` →
+   same job. Merge provenance, keep the earliest `posted_at`.
+2. **Exact, cross-source**: same `canonical_url` alone (ignoring
+   `external_source_id`) → same job, gated by
+   `SourceCapabilities.canonical_application_url` on *both* the new and the
+   matched job's originating source (a source without a stable canonical URL
+   must never be compared on URL alone). Merge provenance.
+3. **Probable duplicate**: same `normalized_company` + `normalized_title` +
+   `normalized_location` (never optional) **and** at least one corroborating
+   signal — identical `description_fingerprint`, bounded token-set (Jaccard)
+   similarity of the two descriptions ≥ 0.6, or a `posted_date` within ±3
+   days combined with matching `salary_min`/`salary_max` when both sources
+   report salary. Merge provenance.
+4. **Repost**: same company+title+location, no probable-duplicate signal, and
+   the existing job's `posted_at` is older than a configurable gap (default
+   21 days) → new `Job` row, linked via `previous_job_id`, subject to the
+   repost notification policy (do not re-notify unless materially changed or
+   repost policy allows).
+5. Anything else → distinct job.
 
 `find_by_fingerprint` in the repository only implements tier 1 lookup
-efficiently (indexed exact match); tiers 2–3 are pipeline-level comparisons
-against a recent-jobs window (`list_recent_jobs`), acceptable at Milestone 1
-volumes.
+efficiently (indexed exact match, `job_fingerprints`'s primary key); tier 2's
+cross-source URL lookup is backed by a separate non-unique index
+(`idx_job_fingerprints_canonical_url`, §20); tiers 3–4 are pipeline-level
+comparisons against a recent-jobs window (`list_recent_jobs`), acceptable at
+Milestone 1/2 volumes. `deduplication.py::DedupTier` names these
+`EXACT_DUPLICATE` (tier 2) / `PROBABLE_DUPLICATE` (tier 3) / `REPOST` /
+`DISTINCT`.
 
 ## 9. Source discovery vs. job collection
 
@@ -1162,7 +1179,10 @@ database and a pre-1.1 Milestone 1 database (never versioned, reads `0`)
 are both stamped `1`; a database whose version is greater than this build's
 `_SCHEMA_VERSION` raises `SchemaVersionError` and refuses to run. See
 D-026 — 1.1 introduces no schema change, so this is purely the versioning
-mechanism itself, not a migration.
+mechanism itself, not a migration. Milestone 2 Deliverable 5 step 9 (§20) is
+the first change that bumps `_SCHEMA_VERSION` from `1` to `2` — a purely
+additive `CREATE INDEX IF NOT EXISTS`; a `1`-stamped database upgrades to `2`
+the same no-op way on next open, with no data loss.
 
 ### 15.7 Industry/sector/seniority source-selection signal
 
@@ -1432,3 +1452,71 @@ exactly one HTTP request per call and never sends `skip`/`limit`;
 acknowledged limitation. A watchlisted company with more open postings than
 one unpaginated response returns will have some postings silently
 unfetched until this is revisited with a verified termination signal.
+
+## 20. Milestone 2 Deliverable 5 step 9: cross-source deduplication and
+provenance (implemented)
+
+`deduplication.py::DedupTier` gains two new members and `match_against_recent`
+gains two new tiers (decisions.md D-038; MILESTONE_2.md "Deduplication
+implications"), evaluated in this order ahead of the unchanged repost/distinct
+fallback — see §8 for the full, current tier list:
+
+- **`EXACT_DUPLICATE`**: a cross-source match on `JobFingerprint
+  .canonical_url` alone, ignoring `external_source_id` entirely — deliberately
+  *not* gated on `_same_identity` (company+title+location), since the whole
+  point is catching the case where an aggregator's redirect URL and an ATS
+  feed's own posting URL resolve to the same real apply page even when the
+  two sources' free-text company/location parsing didn't normalise
+  identically. Gated by `SourceCapabilities.canonical_application_url`
+  (decisions.md D-041) on **both** the new job's and the candidate match's
+  originating source — derived from each `JobFingerprint.external_source_id`'s
+  `source_id` prefix, looked up in a `source_id -> SourceCapabilities` map the
+  caller supplies (`match_against_recent(..., source_capabilities=...)`); a
+  source absent from that map defaults to `SourceCapabilities()`'s own `True`
+  default, the same convention every other capability consumption point in M2
+  uses for an unset `capabilities` block. `pipeline.py::run_once` builds this
+  map once per run from the loaded registry
+  (`{entry.source_id: entry.capabilities for entry in registry}`) and passes
+  it through; `deduplication.py` itself never reads a registry or a
+  `source_id` literal.
+- **`PROBABLE_DUPLICATE`**: generalises the old (pre-step-9)
+  `CROSS_SOURCE_DUPLICATE` tier, which required the `_same_identity`
+  precondition **and** a byte-identical `description_fingerprint`. The
+  precondition is unchanged and still never optional (MILESTONE_2.md risk
+  R-8), but the corroborating signal is now any *one* of three: an identical
+  `description_fingerprint` (kept, still checked first since it's the
+  strongest available), a bounded token-set (Jaccard) similarity of the two
+  jobs' `description_text` (via the existing, shared
+  `matching/normalize.py::normalize_tokens` — no new tokenisation logic) at or
+  above `PROBABLE_DUPLICATE_JACCARD_THRESHOLD` (0.6), or a `posted_date`
+  within `PROBABLE_DUPLICATE_POSTED_DATE_WINDOW_DAYS` (±3 days) of each other
+  combined with identical `salary_min` **and** `salary_max` when both jobs
+  report salary (a `None` on either side simply means that signal doesn't
+  fire — same "absence is not an error" convention D-041 established for
+  every other capability-conditioned signal). No embeddings, per explicit
+  instruction (decisions.md D-038).
+
+Both new tiers, like the pre-existing `CROSS_SOURCE_DUPLICATE` tier they
+extend/replace, merge into the pipeline's existing dedup call site
+(`pipeline.py::run_once`) identically: `repository.merge_provenance(...)` is
+called against the matched job, `run.jobs_duplicate` increments, and no new
+`Job` row is written — `pipeline.py` treats `EXACT_DUPLICATE` and
+`PROBABLE_DUPLICATE` as one merge-eligible outcome, the same way it
+previously treated `CROSS_SOURCE_DUPLICATE`.
+
+**Persistence** (decisions.md D-038's Workstream F conclusion; MILESTONE_2.md
+"Persistence implications" — this is the milestone's first schema change,
+`_SCHEMA_VERSION` `1`->`2`, §15.6): `sqlite_repo.py` adds a non-unique
+`CREATE INDEX IF NOT EXISTS idx_job_fingerprints_canonical_url ON
+job_fingerprints(canonical_url)`, backing the new `EXACT_DUPLICATE` tier's
+lookup (the table's existing `PRIMARY KEY (canonical_url,
+external_source_id)` already serves Tier 1 efficiently but can't serve a
+canonical-URL-only lookup). No new table and no new `SourceObservation` model
+— auditing `SqliteJobRepository.merge_provenance` confirmed `source_provenance`
+is already an append-only fetch-observation log (a fresh row is inserted on
+every call, including repeat fetches of the same source/external-id pair);
+the only genuine gap was a missing read method, now added:
+`JobRepository.list_provenance(job_id) -> list[SourceProvenance]` (§4),
+returning every observation for a job in fetch order (`ORDER BY id ASC`, i.e.
+insertion order — `first_seen_at`/`last_seen_at` per source are a `MIN`/
+`MAX(fetched_at)` computed by the caller over this list, not a stored column).

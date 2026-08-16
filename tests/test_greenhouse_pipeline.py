@@ -315,7 +315,14 @@ def test_no_keyword_planned_queries_generated_for_greenhouse(tmp_path) -> None: 
 def test_run_once_pulls_from_greenhouse_via_watchlist_fan_out(tmp_path) -> None:  # type: ignore[no-untyped-def]
     registry = [_greenhouse_registry_entry()]
     watchlist = [_watchlist_entry()]
-    fake = _FakeGreenhouseAdapter([_greenhouse_record("1"), _greenhouse_record("2")])
+    # distinct titles (not just a differing numeric id in otherwise-identical
+    # text), so Milestone 2 Deliverable 5 step 9's bounded-Jaccard
+    # probable-duplicate tier (deduplication.py) doesn't fire between fixture
+    # records that are only meant to differ by id — same discipline
+    # test_pipeline.py's Adzuna fixtures already document.
+    fake = _FakeGreenhouseAdapter(
+        [_greenhouse_record("1"), _greenhouse_record("2", title="Finance Analyst")]
+    )
 
     # included_countries=["GB"] is required just to get greenhouse_entry
     # selected at all (an empty included_countries means zero requested

@@ -2045,3 +2045,74 @@ the existing generic watchlist-execution architecture rather than building
 a parallel one, and use a source's own real structured data in preference
 to a shared heuristic when — and only when — that data is genuinely more
 reliable than the heuristic it would replace.
+
+### D-049: Cross-source deduplication (Milestone 2 Deliverable 5 step 9) —
+`DedupTier.CROSS_SOURCE_DUPLICATE` renamed/split into `EXACT_DUPLICATE`/
+`PROBABLE_DUPLICATE`; capability gating passed as a plain `source_id ->
+SourceCapabilities` map, never a registry dependency inside `deduplication.py`
+**Decision**: Implements D-038's design exactly as specified (exact
+cross-source canonical-URL tier + Jaccard/posted-date+salary-corroborated
+probable-duplicate tier; thresholds unchanged from the design pass:
+`PROBABLE_DUPLICATE_JACCARD_THRESHOLD = 0.6`,
+`PROBABLE_DUPLICATE_POSTED_DATE_WINDOW_DAYS = 3`), with two implementation
+choices the design pass left open:
+1. **`DedupTier.CROSS_SOURCE_DUPLICATE` is renamed to `EXACT_DUPLICATE` and
+   `PROBABLE_DUPLICATE`, not kept as one enum value covering both new
+   tiers.** MILESTONE_2.md's own "Deduplication implications" section
+   defines exactly these two named categories ("Exact duplicate: Tier 1...
+   or the new cross-source canonical-URL match — no reasonable doubt";
+   "Probable duplicate: the new Tier 2..."), so the code now says what the
+   spec already says. The value is not persisted anywhere (`DedupResult` is
+   an in-memory pipeline signal only, never written to SQLite or exposed on
+   a `Job`/`MatchResult`), and exactly one existing test referenced the old
+   name — a safe, in-scope rename rather than a breaking schema/API change.
+   `pipeline.py`'s dedup call site now checks membership in
+   `(EXACT_DUPLICATE, PROBABLE_DUPLICATE)` where it previously checked one
+   value; both are merge-eligible outcomes with identical downstream
+   handling (`merge_provenance`, `jobs_duplicate += 1`, no new `Job` row).
+2. **Capability gating takes a `source_capabilities: Mapping[str,
+   SourceCapabilities] | None` parameter on `match_against_recent`, not a
+   `SourceRegistryEntry` list or a registry lookup inside
+   `deduplication.py`.** `deduplication.py` has never imported
+   `SourceRegistryEntry` and this task does not start — `pipeline.py::run_once`
+   (which already holds the loaded registry) builds the
+   `source_id -> SourceCapabilities` map once per run and passes it through,
+   the same "pass data in, don't reach out for it" shape `evaluate_hard_filters`/
+   `run_prefilter` already use for `CandidateProfile`/`SearchProfile`. Each
+   fingerprint's own `source_id` (parsed from `external_source_id`'s
+   `"{source_id}:{external_id}"` prefix, the same format `compute_fingerprint`
+   already constructs) is the lookup key; a `source_id` absent from the map
+   falls back to `SourceCapabilities()`'s own `True` default for
+   `canonical_application_url` — identical to how an omitted `capabilities`
+   block on a real `SourceRegistryEntry` already behaves (D-041), so a caller
+   that doesn't care about capability gating (most existing unit tests) needs
+   to pass nothing.
+**Real-registry regression coverage**: `reed_api`'s packaged registry entry
+already ships `canonical_application_url: false` (D-046 — Reed's Search API
+returns no application/job URL at all) — `test_deduplication.py` exercises
+the capability gate against this real, already-verified capability value
+rather than only an invented fixture, and a new
+`tests/test_cross_source_dedup_pipeline.py` proves the `EXACT_DUPLICATE`
+tier end-to-end through `pipeline.py::run_once` across two real source_ids
+(`adzuna_api` keyword-query path, `greenhouse_public_feeds` watchlist path)
+collapsing into one canonical `Job` with two `source_provenance` rows,
+readable back via the new `JobRepository.list_provenance`.
+**Alternatives**: Keeping one `CROSS_SOURCE_DUPLICATE` enum value for both
+new tiers (rejected — loses the "no reasonable doubt" vs. "short of
+certainty" distinction MILESTONE_2.md's terminology section explicitly asks
+for, for no simplification benefit since `pipeline.py`'s two call sites
+already need to check "is this a duplicate at all" as a set membership test
+either way). Passing the whole `list[SourceRegistryEntry]` into
+`match_against_recent` (rejected — `deduplication.py` would then depend on
+`models.SourceRegistryEntry`'s full shape for one boolean field, and every
+other capability-consuming function in this codebase already takes the
+narrower `SourceCapabilities`/a plain mapping, not the entry itself).
+**Why**: Matches this task's own instruction to reuse the milestone
+document's stated design and terminology exactly rather than inventing a
+parallel vocabulary, keeps `deduplication.py` free of any registry/`source_id`
+branching per D-040's architectural rule (the module only ever *reads*
+`source_id` as data, via the capabilities map, never branches its own logic
+on a literal `source_id` string), and prefers a real, already-shipped
+capability difference (Reed's `canonical_application_url: false`) for
+regression coverage over an invented one wherever the codebase already has
+one available.

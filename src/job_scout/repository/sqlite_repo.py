@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from job_scout.models import (
+    AccessMode,
     ApplicationStatus,
     Job,
     JobFingerprint,
@@ -26,7 +27,7 @@ from job_scout.models import (
     VisaAssessment,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 class SchemaVersionError(Exception):
@@ -56,6 +57,12 @@ CREATE TABLE IF NOT EXISTS job_fingerprints (
     posted_date TEXT,
     PRIMARY KEY (canonical_url, external_source_id)
 );
+-- Milestone 2 Deliverable 5 step 9 (decisions.md D-038; _SCHEMA_VERSION 1->2,
+-- see "Persistence implications" in MILESTONE_2.md): backs the new
+-- cross-source exact-canonical-URL dedup tier's lookup. Non-unique — the
+-- existing PRIMARY KEY above already covers Tier 1's own exact lookup.
+CREATE INDEX IF NOT EXISTS idx_job_fingerprints_canonical_url
+    ON job_fingerprints(canonical_url);
 
 CREATE TABLE IF NOT EXISTS source_provenance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,9 +142,11 @@ class SqliteJobRepository:
         """PRAGMA user_version check (architecture.md section 15.6;
         decisions.md D-026). A brand-new database and a pre-Milestone-1.1
         database (schema-identical, but never stamped, so it reads 0) are
-        both stamped the current version — 1.1 introduces no schema change,
-        so this is purely the versioning mechanism itself, not a migration.
-        A database from a newer, unsupported schema version refuses to run.
+        both stamped the current version. Milestone 2 Deliverable 5 step 9
+        is the first change that bumps this (1->2, purely additive: the new
+        canonical_url index only) — a database stamped 1 opens cleanly and
+        is upgraded to 2 the same no-op way. A database from a newer,
+        unsupported schema version refuses to run.
         """
         (current_version,) = self._conn.execute("PRAGMA user_version").fetchone()
         if current_version > _SCHEMA_VERSION:
@@ -246,6 +255,32 @@ class SqliteJobRepository:
             (since.isoformat(), limit),
         ).fetchall()
         return [Job.model_validate(json.loads(row[0])) for row in rows]
+
+    def list_provenance(self, job_id: str) -> list[SourceProvenance]:
+        """Milestone 2 Deliverable 5 step 9 (decisions.md D-038, Workstream
+        F): source_provenance is already an append-only fetch-observation
+        log (merge_provenance inserts a fresh row on every call, including
+        repeat fetches) — this is the missing read method, not a new model.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT source_id, access_mode, fetched_at, raw_url, external_id
+            FROM source_provenance
+            WHERE job_id = ?
+            ORDER BY id ASC
+            """,
+            (job_id,),
+        ).fetchall()
+        return [
+            SourceProvenance(
+                source_id=row[0],
+                access_mode=AccessMode(row[1]),
+                fetched_at=datetime.fromisoformat(row[2]),
+                raw_url=row[3],
+                external_id=row[4],
+            )
+            for row in rows
+        ]
 
     # --- source runs / match results ----------------------------------------
 

@@ -507,6 +507,12 @@ def run_once(
     )
     watchlist = company_watchlist or []
     registry_by_id = {entry.source_id: entry for entry in registry}
+    # Milestone 2 Deliverable 5 step 9 (decisions.md D-041): source_id ->
+    # SourceCapabilities, passed through to match_against_recent so the new
+    # cross-source exact-URL dedup tier can gate on
+    # canonical_application_url without deduplication.py depending on the
+    # registry type itself.
+    capabilities_by_source = {sid: entry.capabilities for sid, entry in registry_by_id.items()}
     prefilter_weights = PrefilterWeights.from_scoring_weights(scoring_weights)
 
     job_cap = _effective_job_limit(execution_limits, limit)
@@ -668,8 +674,13 @@ def run_once(
                 run.jobs_duplicate += 1
                 effective_job = existing
             else:
-                dedup = match_against_recent(job, recent_jobs)
-                if dedup.tier == DedupTier.CROSS_SOURCE_DUPLICATE and dedup.matched_job is not None:
+                dedup = match_against_recent(
+                    job, recent_jobs, source_capabilities=capabilities_by_source
+                )
+                if (
+                    dedup.tier in (DedupTier.EXACT_DUPLICATE, DedupTier.PROBABLE_DUPLICATE)
+                    and dedup.matched_job is not None
+                ):
                     repository.merge_provenance(dedup.matched_job.job_id, job.source_provenance[0])
                     run.jobs_duplicate += 1
                     effective_job = dedup.matched_job
