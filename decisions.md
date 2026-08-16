@@ -1924,3 +1924,124 @@ support a claim, and extend existing narrow mechanisms (a second factory
 shape, a capability-gated branch) by the smallest matching increment rather
 than generalising `AdapterFactory` itself or reaching for a new
 `SourceAdapter` method.
+
+### D-048: `LeverAdapter` (Milestone 2 Deliverable 5 step 8) — reuses
+D-047's watchlist branch unmodified; no pagination shipped; `country` and
+`workplaceType` used directly since Lever's contract is genuinely more
+structured than Greenhouse's
+**Decision**: `sources/lever.py::LeverAdapter` implements Lever's public
+Postings API (`GET https://api.lever.co/v0/postings/{site}?mode=json`, no
+authentication, verified against the official docs —
+`lever/postings-api`, https://github.com/lever/postings-api — at
+implementation time), following `GreenhouseAdapter`'s exact structural
+shape (`is_configured()`, typed exceptions from `sources/base.py`, one
+instance per `CompanyWatchlistEntry`) with genuine, documented differences
+in three places:
+1. **Bare-array response, not a wrapped object.** Unlike Greenhouse's
+   `{"jobs": [...]}`, a live, unauthenticated request against a real
+   Lever-hosted site (`https://api.lever.co/v0/postings/lever?mode=json`,
+   checked at implementation time — returned `[]`) confirmed the
+   list-postings endpoint returns a bare JSON array at the top level. This
+   was not fully confirmed by the official README text alone (which
+   describes per-posting fields but shows no literal example response),
+   so the live check is the evidence this project's bar requires
+   (D-016/D-027/D-028/D-031). `_get_postings` treats any other top-level
+   shape as zero postings, never guessed at — same discipline as
+   Greenhouse's `payload.get("jobs", [])` fallback for its analogous case.
+2. **No pagination, deliberately.** Lever's docs document real `skip`/
+   `limit` query parameters — unlike Greenhouse, which has no pagination
+   parameters at all — but neither the docs nor the live check above
+   expose a total-count/`hasMore` termination signal. Per this project's
+   evidence bar, `fetch()` makes exactly one HTTP request and never sends
+   `skip`/`limit`; `SourceCapabilities.pagination=False` records this as a
+   deliberate, acknowledged limitation, not an oversight. A watchlisted
+   company with more open postings than one unpaginated response returns
+   will have the remainder silently unfetched until a reliable stop
+   condition is confirmed in a future task.
+3. **`country` and `workplaceType` are real, structured fields Greenhouse's
+   feed does not have** — Lever's docs document `country` as ISO 3166-1
+   alpha-2 or `null`, and `workplaceType` as a closed enum
+   (`unspecified|on-site|remote|hybrid`). `Location.country` is populated
+   directly from `country` (null/absent → `""`, the same honest-unknown
+   convention every adapter already uses for a missing required string) —
+   genuinely more accurate than Greenhouse's forced `""` (D-047), since
+   real data exists here. `Job.remote_type` is read directly from
+   `workplaceType` via a fixed `_LEVER_WORKPLACE_TYPE_MAP`
+   (`pipeline.py`), **not** the shared `_guess_remote_type` text heuristic
+   every other source (Adzuna/Reed/Greenhouse) falls back to — a source's
+   own authoritative structured field is more accurate than guessing from
+   description text when that field genuinely exists; an unrecognised or
+   missing value maps to `RemoteType.UNKNOWN`, the same "no evidence"
+   sentinel `_guess_remote_type` already returns (never `None` —
+   `Job.remote_type` is a required field, not optional).
+**`createdAt` is never used for `posted_at`.** A live response can carry
+an undocumented `createdAt` field, but Lever's own `postings-api` issue
+tracker (`github.com/lever/postings-api` issue #35, "`createdAt` field not
+documented and no correct (v0)") reports its values do not parse into sane
+timestamps and the field has no documented meaning. Treating an
+unreliable, unofficial field as a posting date would be exactly the
+fabricated-certainty this project's evidence bar forbids — `posted_at`
+stays `None` unconditionally, same treatment D-046/D-047 already gave
+Reed's/Greenhouse's missing posted-date signal.
+**`salaryRange`** (`currency`/`min`/`max`, all optional per Lever's docs)
+maps directly to `salary_currency`/`salary_min`/`salary_max`; a missing
+`salaryRange` (or a missing sub-field) normalizes to `None`, never `0` or
+inferred from the separate freeform `salaryDescription` text.
+**`applyUrl` is preserved but not surfaced.** Lever documents two distinct
+links per posting — `hostedUrl` (the posting page) and `applyUrl` (the
+application form). `raw_url`/`Job`'s canonical URL uses `hostedUrl` only
+(the same "one canonical URL field" shape every adapter already has);
+`applyUrl` is kept on `raw_payload` (via the same `{**item, ...}` spread
+`_to_raw_record` already uses) for potential future use, not discarded,
+but no new `Job`/`RawJobRecord` field was added to carry it — adding one
+now would be schema growth for a value nothing downstream reads yet.
+**Watchlist branch reused unmodified.** `pipeline.py::run_once`'s
+`is_watchlist_source = entry.capabilities.company_filter` branch (D-047)
+required zero changes — it already reads `SourceCapabilities.company_filter`
+from the registry, never a `source_id` string check, exactly so Lever could
+land here. The only `pipeline.py` changes are a second `elif` in
+`_default_watchlist_adapter_factory` (constructing `LeverAdapter` from
+`CompanyWatchlistEntry.external_company_key`/`company_name`, mirroring
+Greenhouse's branch byte-for-byte in shape) and a second `_NORMALIZERS`
+entry. `query_planner.py`/`source_intelligence/planner.py` are untouched,
+same as D-047.
+**`SourceCapabilities`** (packaged template,
+`source_registry.example.yaml`): `company_filter: true`,
+`keyword_search: false`, `exact_phrase_search: false`, `location_filter:
+false`, `country_filter: false`, `city_filter: false`, `industry_filter:
+false`, `remote_filter: false` (Lever documents `location`/`team`/
+`department`/`commitment`/`level` filter parameters, but this adapter
+deliberately never sends them — same "one fetch per watchlisted company,
+unfiltered" shape as Greenhouse, per this task's frozen scope), `salary_data:
+true` (a genuine difference from Greenhouse's `false` — `salaryRange` is
+real, documented, optional data), `structured_description: false`
+(`description`/`descriptionPlain` etc. are freeform HTML/plaintext),
+`pagination: false`, `page_size_control: false` (see point 2 above),
+`posting_date_filter: false`, `stable_external_job_id: true` (`id` is
+confirmed a stable per-posting identifier by the docs), `canonical_
+application_url: true` (`hostedUrl` is a genuine documented link).
+`adapter_ref: lever`; `approval_status` stays `manual_review` (CLAUDE.md
+hard constraint 1 — never approved by default).
+**Alternatives**: Sending `skip`/`limit` and looping until a response page
+returns fewer than `limit` results (considered, rejected — without a
+documented or live-confirmed default/max for `limit`, "fewer than
+requested" is itself an unverified stop-condition assumption, the same
+class of guess D-016/D-027 already declined to make for Adzuna's country
+coverage). Using `_guess_remote_type` for consistency with every other
+source instead of `workplaceType` (considered, rejected per this task's
+explicit instruction and this project's general "prefer real structured
+data over a heuristic when it genuinely exists" principle — Greenhouse and
+Reed use the heuristic only because they have no better field to read, not
+because consistency across sources is itself a goal). Hardcoding
+`if selected.source_id == "lever_public_postings"` anywhere in `pipeline.py`
+beyond the one factory `elif` (rejected — the shared `is_watchlist_source`
+branch already generalizes correctly via `capabilities.company_filter`,
+per D-047's own design intent).
+**Why**: Same evidence-bar-first, smallest-safe-change discipline as
+D-046/D-047 — verify the actual documented (and, where docs were
+insufficient, live-checked) contract, degrade honestly to `None`/`""`
+rather than fabricate or infer when evidence doesn't support a claim, reuse
+the existing generic watchlist-execution architecture rather than building
+a parallel one, and use a source's own real structured data in preference
+to a shared heuristic when — and only when — that data is genuinely more
+reliable than the heuristic it would replace.

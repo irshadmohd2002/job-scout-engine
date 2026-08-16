@@ -311,6 +311,25 @@ below for the full watchlist-fan-out design, which is the actual reason
 `SourceAdapter.fetch()`'s Protocol signature stays unchanged for a
 company_filter=True source.
 
+Milestone 2 Deliverable 5 step 8 adds a fourth: `LeverAdapter`
+(`sources/lever.py`, `public_ats_feed`, ships `manual_review` in the
+packaged registry template — decisions.md D-048). Same watchlist-scoped
+execution shape as `GreenhouseAdapter` (one instance per
+`CompanyWatchlistEntry`, section 18), but a genuinely different verified
+contract in three respects: (1) its list endpoint returns a bare JSON
+array, not a wrapped object; (2) it documents real `skip`/`limit`
+pagination parameters, but this adapter deliberately never sends them —
+neither the docs nor a live check expose a total-count/`hasMore`
+termination signal, so exactly one unpaginated request is made per
+`fetch()` call, the same conservative "don't guess an unconfirmed
+contract" discipline as D-016/D-027/D-031/D-046/D-047; (3) it exposes
+genuinely structured `country` and `workplaceType` fields that Greenhouse's
+feed does not — `Location.country` is populated for real (not always `""`)
+and `Job.remote_type` is read directly from `workplaceType` instead of the
+shared `_guess_remote_type` text heuristic every other source falls back
+to, since using a source's own authoritative field is more accurate than
+guessing when that data genuinely exists.
+
 **Known limitation — truncated descriptions**: Adzuna's `/search` endpoint
 returns only a snippet of each job's description (their own docs state this
 explicitly); there is no documented request parameter to obtain the full
@@ -889,7 +908,9 @@ src/job_scout/
 │   ├── __init__.py
 │   ├── base.py                # SourceAdapter Protocol, RawJobRecord, exceptions
 │   ├── adzuna.py                # AdzunaAdapter — the only adapter in M1
-│   └── reed.py                   # ReedAdapter — added Milestone 2 Deliverable 5 step 5
+│   ├── reed.py                   # ReedAdapter — added Milestone 2 Deliverable 5 step 5
+│   ├── greenhouse.py               # GreenhouseAdapter — step 7
+│   └── lever.py                     # LeverAdapter — step 8
 ├── matching/
 │   ├── __init__.py
 │   ├── hard_filters.py           # Stage 1
@@ -1355,3 +1376,59 @@ on this endpoint, D-047); `company` is read from
 from the `CompanyWatchlistEntry` that produced the fetch (Greenhouse's own
 response never names the company); `raw_url` is Greenhouse's own
 `absolute_url` — a genuine canonical application URL, unlike Reed's.
+
+## 19. Milestone 2 Deliverable 5 step 8: Lever adapter (implemented)
+
+`sources/lever.py::LeverAdapter` implements Lever's public Postings API
+(`GET https://api.lever.co/v0/postings/{site}?mode=json`, no auth — see
+§3). Reuses §18's watchlist-fan-out branch **unmodified**
+(`entry.capabilities.company_filter`-gated, never a `source_id` check, per
+§18's own stated design) — the only pipeline changes are a second `elif`
+in `_default_watchlist_adapter_factory` (constructing `LeverAdapter` from
+`CompanyWatchlistEntry.external_company_key`/`company_name`, mirroring
+Greenhouse's branch) and a second `_NORMALIZERS` entry
+(`"lever_public_postings": normalize_lever_record`). `query_planner.py`/
+`source_intelligence/planner.py::build_plan` are untouched by this step,
+same as §18.
+
+`normalize_lever_record` (`pipeline.py`) follows the `_NORMALIZERS`
+dict-dispatch pattern unchanged (D-040), but differs from
+`normalize_greenhouse_record` in three respects Lever's richer, verified
+contract actually supports (decisions.md D-048):
+- `Location.country` uses Lever's own documented `country` field (ISO
+  alpha-2 or `null` → `""`) directly — real structured data, not inferred
+  from free text, unlike Greenhouse.
+- `Job.remote_type` is read directly from Lever's documented `workplaceType`
+  enum (`remote`/`hybrid`/`on-site`/`unspecified` → `RemoteType.REMOTE`/
+  `HYBRID`/`ONSITE`/`UNKNOWN`), not the shared `_guess_remote_type` text
+  heuristic every other source (including Greenhouse) falls back to — using
+  a source's own authoritative field is more accurate than guessing when
+  that data genuinely exists.
+- `salary_min`/`salary_max`/`salary_currency` are read from Lever's
+  documented, optional `salaryRange` object when present (absent → `None`,
+  never fabricated/defaulted to `0`) — unlike Greenhouse, which has no
+  salary field on its list endpoint at all.
+`posted_at` stays `None` unconditionally: a live response can carry an
+undocumented `createdAt` field, but Lever's own `postings-api` issue
+tracker (issue #35) reports its values do not parse into sane timestamps —
+never treated as a posting date (same "don't guess an unverified field"
+discipline as D-046/D-047). `employment_type` reads `categories.commitment`
+when present, else `None`. `company` is read from
+`raw_payload["_company_name"]`, stashed by `LeverAdapter._to_raw_record`
+the same way Greenhouse stashes it (Lever's own response never names the
+company). `raw_url` is Lever's own `hostedUrl` — a genuine canonical
+posting URL; the separate `applyUrl` field is preserved on `raw_payload`
+for potential future use but not surfaced onto any `Job`/`RawJobRecord`
+field, since only one URL field exists to populate.
+
+**Known limitation — no pagination.** Lever's Postings API documents real
+`skip`/`limit` query parameters (unlike Greenhouse, which has none at all),
+but neither the official docs nor a live, unauthenticated check performed
+at implementation time expose a total-count/`hasMore` termination signal.
+Per this project's evidence bar (D-016/D-027/D-028/D-031/D-046/D-047 —
+never build against an unconfirmed contract), `LeverAdapter.fetch()` makes
+exactly one HTTP request per call and never sends `skip`/`limit`;
+`SourceCapabilities.pagination=False` records this as a deliberate,
+acknowledged limitation. A watchlisted company with more open postings than
+one unpaginated response returns will have some postings silently
+unfetched until this is revisited with a verified termination signal.

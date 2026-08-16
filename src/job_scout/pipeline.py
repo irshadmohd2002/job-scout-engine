@@ -64,6 +64,7 @@ from job_scout.source_intelligence.planner import build_plan
 from job_scout.sources.adzuna import AdzunaAdapter
 from job_scout.sources.base import SourceAdapter, SourceAdapterError
 from job_scout.sources.greenhouse import GreenhouseAdapter
+from job_scout.sources.lever import LeverAdapter
 from job_scout.sources.reed import ReedAdapter
 
 RECENT_WINDOW_DAYS = 45
@@ -112,6 +113,13 @@ def _default_watchlist_adapter_factory(
         if source_id == "greenhouse_public_feeds":
             return GreenhouseAdapter(
                 board_token=company.external_company_key,
+                company_name=company.company_name,
+                request_timeout_seconds=execution_limits.request_timeout_seconds,
+                max_retries=execution_limits.max_retries,
+            )
+        if source_id == "lever_public_postings":
+            return LeverAdapter(
+                company_key=company.external_company_key,
                 company_name=company.company_name,
                 request_timeout_seconds=execution_limits.request_timeout_seconds,
                 max_retries=execution_limits.max_retries,
@@ -339,10 +347,114 @@ def normalize_greenhouse_record(record: RawJobRecord) -> Job:
     )
 
 
+# Milestone 2 Deliverable 5 step 8 (decisions.md D-048): Lever's
+# `workplaceType` is real, documented, structured data — unlike every other
+# source in this project so far, which has no native remote-work signal and
+# falls back to `_guess_remote_type`'s text heuristic. Mapping a source's
+# own authoritative field directly is more accurate than guessing when that
+# data genuinely exists; `"unspecified"`/an unrecognised/missing value maps
+# to `RemoteType.UNKNOWN`, the same "no evidence" sentinel every other
+# normalizer already uses (never `None` — `Job.remote_type` is a required
+# `RemoteType` field, not optional).
+_LEVER_WORKPLACE_TYPE_MAP: dict[str, RemoteType] = {
+    "remote": RemoteType.REMOTE,
+    "hybrid": RemoteType.HYBRID,
+    "on-site": RemoteType.ONSITE,
+}
+
+
+def normalize_lever_record(record: RawJobRecord) -> Job:
+    # Milestone 2 Deliverable 5 step 8 (decisions.md D-048): field names
+    # verified against Lever's official Postings API docs — see
+    # sources/lever.py's module docstring for the full contract and the
+    # reasoning behind every field left None/unmapped below.
+    payload = record.raw_payload
+    title = str(payload.get("text", "")).strip()
+    # Lever's list-postings response never includes a company name (one
+    # site = one company, implicitly) — the only source of truth is the
+    # CompanyWatchlistEntry that produced this fetch, stashed by
+    # LeverAdapter._to_raw_record the same way GreenhouseAdapter stashes
+    # company_name.
+    company = str(payload.get("_company_name", "Unknown")).strip()
+    # Lever documents a real, structured `country` field (ISO 3166-1
+    # alpha-2, or null) — unlike Greenhouse, this is genuine structured
+    # data, never inferred/guessed from free text; null/absent normalizes
+    # to "" (the same honest-unknown convention every adapter already uses
+    # for a missing required string).
+    country = str(payload.get("country") or "").strip()
+    categories = payload.get("categories") or {}
+    location_name = categories.get("location")
+    location = Location(country=country, city=location_name)
+
+    description_raw = str(payload.get("description", ""))
+    description_text = strip_html(description_raw)
+
+    # A live response can carry an undocumented `createdAt` field, but
+    # Lever's own postings-api issue tracker (issue #35: "createdAt field
+    # not documented and no correct (v0)") reports its values do not parse
+    # into sane timestamps — never treated as a posting date (D-040's rule:
+    # None if unconfirmed, never guessed; see sources/lever.py's module
+    # docstring for the full citation).
+    posted_at: datetime | None = None
+
+    employment_type = categories.get("commitment") or None
+
+    workplace_type = payload.get("workplaceType")
+    remote_type = _LEVER_WORKPLACE_TYPE_MAP.get(str(workplace_type), RemoteType.UNKNOWN)
+
+    salary_range = payload.get("salaryRange") or {}
+
+    fingerprint = compute_fingerprint(
+        source_id=record.source_id,
+        external_id=record.external_id,
+        raw_url=record.raw_url,
+        company=company,
+        title=title,
+        location=location,
+        description_text=description_text,
+        posted_at=posted_at,
+    )
+
+    provenance = SourceProvenance(
+        source_id=record.source_id,
+        access_mode=LeverAdapter.access_mode,
+        fetched_at=record.fetched_at,
+        raw_url=record.raw_url,
+        external_id=record.external_id,
+    )
+
+    return Job(
+        job_id=str(uuid.uuid4()),
+        external_ids=[SourceExternalId(source_id=record.source_id, external_id=record.external_id)],
+        title=title,
+        normalized_title=fingerprint.normalized_title,
+        company=company,
+        normalized_company=fingerprint.normalized_company,
+        location=location,
+        remote_type=remote_type,
+        employment_type=employment_type,
+        description_raw=description_raw,
+        description_text=description_text,
+        posted_at=posted_at,
+        collected_at=datetime.now(UTC),
+        # salaryRange is optional per Lever's docs — missing entirely
+        # normalizes to None, never fabricated/defaulted to 0 (item 13 of
+        # this task's frozen scope); never inferred from salaryDescription
+        # freeform text either.
+        salary_min=salary_range.get("min"),
+        salary_max=salary_range.get("max"),
+        salary_currency=salary_range.get("currency"),
+        source_provenance=[provenance],
+        fingerprint=fingerprint,
+        role_family_hints=[],
+    )
+
+
 _NORMALIZERS: dict[str, Callable[[RawJobRecord], Job]] = {
     "adzuna_api": normalize_adzuna_record,
     "reed_api": normalize_reed_record,
     "greenhouse_public_feeds": normalize_greenhouse_record,
+    "lever_public_postings": normalize_lever_record,
 }
 
 
