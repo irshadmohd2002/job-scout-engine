@@ -448,6 +448,74 @@ def test_packaged_company_watchlist_template_contains_no_secrets() -> None:
         assert forbidden not in raw
 
 
+VALID_SPONSOR_REGISTRIES_YAML = """
+registers:
+  - country: GB
+    register_name: uk_home_office_sponsor_list
+    enabled: true
+  - country: NL
+    register_name: ind_recognised_sponsors
+    enabled: false
+"""
+
+
+def test_load_sponsor_registries_config(tmp_path: Path) -> None:
+    p = tmp_path / "sponsor_registries.yaml"
+    p.write_text(VALID_SPONSOR_REGISTRIES_YAML, encoding="utf-8")
+    registers = config.load_sponsor_registries_config(p)
+    assert [r.country for r in registers] == ["GB", "NL"]
+    assert registers[0].register_name == "uk_home_office_sponsor_list"
+    assert registers[0].enabled is True
+    assert registers[1].enabled is False
+
+
+def test_load_sponsor_registries_config_empty_list_is_valid(tmp_path: Path) -> None:
+    p = tmp_path / "sponsor_registries.yaml"
+    p.write_text("registers: []\n", encoding="utf-8")
+    assert config.load_sponsor_registries_config(p) == []
+
+
+def test_load_sponsor_registries_config_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_sponsor_registries_config(tmp_path / "does_not_exist.yaml")
+    assert "not found" in str(exc_info.value)
+
+
+def test_load_sponsor_registries_config_rejects_duplicate_country_and_register(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "sponsor_registries.yaml"
+    p.write_text(
+        VALID_SPONSOR_REGISTRIES_YAML.rstrip()
+        + "\n  - country: GB\n    register_name: uk_home_office_sponsor_list\n"
+        + "    enabled: true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_sponsor_registries_config(p)
+
+
+def test_packaged_sponsor_registries_template_parses() -> None:
+    import yaml
+
+    from job_scout.resources import template_text
+
+    parsed = yaml.safe_load(template_text("sponsor_registries.example.yaml"))
+    registers = [config.SponsorRegisterConfig.model_validate(r) for r in parsed["registers"]]
+    assert any(
+        r.country == "GB" and r.register_name == "uk_home_office_sponsor_list" and r.enabled
+        for r in registers
+    )
+
+
+def test_packaged_sponsor_registries_template_contains_no_secrets() -> None:
+    from job_scout.resources import template_text
+
+    raw = template_text("sponsor_registries.example.yaml").lower()
+    for forbidden in ("api_key", "apikey", "secret", "token:", "password"):
+        assert forbidden not in raw
+
+
 def test_source_registry_entries_do_not_share_mutable_capability_state() -> None:
     """Guardrail audit (2026-08-08): SourceRegistryEntry.capabilities uses a
     direct nested-model default (`= SourceCapabilities()`), matching this

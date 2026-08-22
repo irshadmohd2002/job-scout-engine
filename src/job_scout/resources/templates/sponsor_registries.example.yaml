@@ -1,0 +1,43 @@
+# Sponsor register metadata — names which employer-sponsorship registers
+# this installation treats as enabled. `job-scout init` copies this template
+# to sponsor_registries.yaml in your own per-user data directory.
+#
+# This file is metadata only. It never contains the register data itself —
+# that lives in the local SQLite database, written only by
+# `job-scout sponsors import <file> --country <CC> --register <name>`, which
+# always parses a file YOU have already downloaded yourself. Nothing in
+# job-scout ever downloads or scrapes a government register automatically
+# (CLAUDE.md hard constraint 1).
+#
+# Fields:
+#   country         ISO 3166-1 alpha-2 country code the register covers.
+#   register_name   Stable identifier for the register/provider — must match
+#                    the --register value you pass to `job-scout sponsors
+#                    import`.
+#   enabled         Whether this installation intends to use this register.
+#                    Purely descriptive — job-scout never disables sponsor-
+#                    registry matching based on this flag; it exists so you
+#                    (and anyone reading your config) can see which
+#                    registers you've set up, without job-scout writing
+#                    anything back into this file after an import.
+#
+# UK — Register of licensed sponsors: workers (gov.uk, published by the
+# Home Office) is the only register provider implemented in Milestone 2
+# (decisions.md D-042/D-050) and ships enabled by default.
+#
+# Netherlands — IND Recognised Sponsors register is deferred, not
+# implemented, in Milestone 2 (decisions.md D-042/D-050: kept in the design
+# to prove the import framework is register-agnostic, but its parser does
+# not exist yet). Left present and disabled below as a placeholder for a
+# future milestone — `job-scout sponsors import --register
+# ind_recognised_sponsors` will raise a clear "unsupported register" error
+# until that provider is built.
+
+registers:
+  - country: GB
+    register_name: uk_home_office_sponsor_list
+    enabled: true
+
+  - country: NL
+    register_name: ind_recognised_sponsors
+    enabled: false

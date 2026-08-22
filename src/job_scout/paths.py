@@ -47,6 +47,11 @@ class AppPaths(BaseModel):
     # load_company_watchlist reads this path directly, MILESTONE_2.md
     # "config.py" changes).
     company_watchlist_path: Path
+    # Milestone 2 Deliverable 5 step 10: same user-specific, no-fallback
+    # treatment as company_watchlist_path above — metadata only (config.py's
+    # load_sponsor_registries_config), never the imported register data
+    # itself (that lives in the SQLite database, not YAML).
+    sponsor_registries_path: Path
     environment_file_path: Path | None = None
 
 
@@ -88,5 +93,6 @@ def resolve_app_paths(
         scoring_weights_path=config_dir / "scoring_weights.yaml",
         source_scoring_weights_path=config_dir / "source_scoring_weights.yaml",
         company_watchlist_path=config_dir / "company_watchlist.yaml",
+        sponsor_registries_path=config_dir / "sponsor_registries.yaml",
         environment_file_path=root / ".env",
     )

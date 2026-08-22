@@ -23,11 +23,12 @@ from job_scout.models import (
     SourcePerformance,
     SourceProvenance,
     SourceRun,
+    SponsorRegistryEntry,
     UserFeedback,
     VisaAssessment,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 class SchemaVersionError(Exception):
@@ -122,6 +123,22 @@ CREATE TABLE IF NOT EXISTS source_performance (
     source_id TEXT NOT NULL,
     data TEXT NOT NULL
 );
+
+-- Milestone 2 Deliverable 5 step 10 (_SCHEMA_VERSION 2->3): one row per
+-- imported sponsor-register entry (source_intelligence/sponsor_registry.py).
+-- `job-scout sponsors import` replaces (DELETE + INSERT), never appends to,
+-- the rows for a given (country, register_name) pair on each import.
+CREATE TABLE IF NOT EXISTS sponsor_registry_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country TEXT NOT NULL,
+    registered_name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    register_name TEXT NOT NULL,
+    license_status TEXT,
+    imported_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sponsor_registry_entries_country_normalized_name
+    ON sponsor_registry_entries(country, normalized_name);
 """
 
 
@@ -143,10 +160,15 @@ class SqliteJobRepository:
         decisions.md D-026). A brand-new database and a pre-Milestone-1.1
         database (schema-identical, but never stamped, so it reads 0) are
         both stamped the current version. Milestone 2 Deliverable 5 step 9
-        is the first change that bumps this (1->2, purely additive: the new
-        canonical_url index only) — a database stamped 1 opens cleanly and
-        is upgraded to 2 the same no-op way. A database from a newer,
-        unsupported schema version refuses to run.
+        bumped this 1->2 (purely additive: the new canonical_url index
+        only); step 10 bumps it again, 2->3 (decisions.md D-050) — the new
+        sponsor_registry_entries table plus two new visa_assessments
+        columns is a materially different schema shape from step 9's, so it
+        gets its own version number rather than reusing 2 (MILESTONE_2.md
+        "Persistence implications": never two shapes sharing one
+        identifier). A database stamped 1 or 2 opens cleanly and is
+        upgraded to 3 the same no-op, additive way. A database from a
+        newer, unsupported schema version refuses to run.
         """
         (current_version,) = self._conn.execute("PRAGMA user_version").fetchone()
         if current_version > _SCHEMA_VERSION:
@@ -156,9 +178,34 @@ class SqliteJobRepository:
                 "corrupting data — upgrade job-scout, or point --db-path at a different "
                 "database."
             )
+        self._migrate_visa_assessments_columns()
         if current_version < _SCHEMA_VERSION:
             self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             self._conn.commit()
+
+    def _migrate_visa_assessments_columns(self) -> None:
+        """Milestone 2 Deliverable 5 step 10 (_SCHEMA_VERSION 2->3):
+        `visa_assessments` predates this step as `(job_id, data)` only.
+        `CREATE TABLE IF NOT EXISTS` is a no-op once the table already
+        exists, so the two new indexed columns (mirroring how match_results
+        already duplicates notification_tier/final_score alongside its JSON
+        blob — decisions.md D-050) need an explicit, idempotent
+        `ALTER TABLE ... ADD COLUMN`, checked against PRAGMA table_info so
+        this is safe to call unconditionally on every open, for both a
+        pre-step-10 database and a database that already has them."""
+        existing_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(visa_assessments)")
+        }
+        if "status" not in existing_columns:
+            self._conn.execute("ALTER TABLE visa_assessments ADD COLUMN status TEXT")
+        if "employer_registry_match" not in existing_columns:
+            self._conn.execute(
+                "ALTER TABLE visa_assessments ADD COLUMN employer_registry_match INTEGER"
+            )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visa_assessments_status ON visa_assessments(status)"
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -328,10 +375,81 @@ class SqliteJobRepository:
 
     def save_visa_assessment(self, assessment: VisaAssessment) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO visa_assessments (job_id, data) VALUES (?, ?)",
-            (assessment.job_id, assessment.model_dump_json()),
+            """
+            INSERT OR REPLACE INTO visa_assessments
+                (job_id, status, employer_registry_match, data)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                assessment.job_id,
+                assessment.status.value,
+                (
+                    None
+                    if assessment.employer_registry_match is None
+                    else int(assessment.employer_registry_match)
+                ),
+                assessment.model_dump_json(),
+            ),
         )
         self._conn.commit()
+
+    # --- sponsor registry (Milestone 2 Deliverable 5 step 10) --------------
+
+    def replace_sponsor_registry_entries(
+        self, country: str, register_name: str, entries: list[SponsorRegistryEntry]
+    ) -> None:
+        """Replaces (never appends to) the rows for this (country,
+        register_name) pair — `job-scout sponsors import` is the documented
+        way to refresh a snapshot (MILESTONE_2.md "Persistence
+        implications")."""
+        self._conn.execute(
+            "DELETE FROM sponsor_registry_entries WHERE country = ? AND register_name = ?",
+            (country, register_name),
+        )
+        self._conn.executemany(
+            """
+            INSERT INTO sponsor_registry_entries
+                (country, registered_name, normalized_name, register_name,
+                 license_status, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    entry.country,
+                    entry.registered_name,
+                    entry.normalized_name,
+                    entry.register_name,
+                    entry.license_status,
+                    entry.imported_at.isoformat(),
+                )
+                for entry in entries
+            ],
+        )
+        self._conn.commit()
+
+    def find_sponsor_registry_entry(
+        self, normalized_name: str, country: str
+    ) -> SponsorRegistryEntry | None:
+        row = self._conn.execute(
+            """
+            SELECT country, registered_name, normalized_name, register_name,
+                   license_status, imported_at
+            FROM sponsor_registry_entries
+            WHERE normalized_name = ? AND country = ?
+            LIMIT 1
+            """,
+            (normalized_name, country),
+        ).fetchone()
+        if row is None:
+            return None
+        return SponsorRegistryEntry(
+            country=row[0],
+            registered_name=row[1],
+            normalized_name=row[2],
+            register_name=row[3],
+            license_status=row[4],
+            imported_at=datetime.fromisoformat(row[5]),
+        )
 
     def save_notification(self, record: NotificationRecord) -> None:
         self._conn.execute(

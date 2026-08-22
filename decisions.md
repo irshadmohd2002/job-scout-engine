@@ -2116,3 +2116,93 @@ on a literal `source_id` string), and prefers a real, already-shipped
 capability difference (Reed's `canonical_application_url: false`) for
 regression coverage over an invented one wherever the codebase already has
 one available.
+
+### D-050: Sponsor registry + UK provider + visa enrichment (Milestone 2
+Deliverable 5 step 10) — `_SCHEMA_VERSION` `2`→`3`; shared
+`matching/visa_patterns.py`; exact normalized-name + country matching only
+
+**Decision**: Implements MILESTONE_2.md's "Sponsorship/visa enrichment
+design" as specified:
+1. **`_SCHEMA_VERSION` bumps `2`→`3`, not a second use of `2`.** Task 9
+   already claimed `2` for the canonical-URL index alone; Task 10 adds a
+   materially different schema shape (a new `sponsor_registry_entries`
+   table plus two new indexed `visa_assessments` columns), so it takes the
+   next version number, exactly as "Persistence implications" requires. A
+   database stamped `1` or `2` upgrades to `3` the same no-op, additive way
+   (`CREATE TABLE`/`INDEX IF NOT EXISTS` plus an idempotent, `PRAGMA
+   table_info`-checked `ALTER TABLE ... ADD COLUMN` for the two
+   `visa_assessments` columns, since that table predates step 10 as
+   `(job_id, data)` only and `CREATE TABLE IF NOT EXISTS` alone can't widen
+   an existing table).
+2. **Only `status` gets its own index (`idx_visa_assessments_status`);
+   `employer_registry_match` does not.** The milestone document's own
+   stated reason for adding these columns is so "a future `job-scout`
+   query/report command can filter by visa status" — a single-column enum
+   filter is the concrete use case, mirroring `match_results` (which
+   likewise stores `notification_tier`/`final_score` as denormalized
+   columns without indexing either). `employer_registry_match` is stored
+   denormalized for the same future-report reason but has no stated filter
+   use case yet, so it isn't indexed until one exists.
+3. **`matching/visa_patterns.py` consolidates three regex-pattern lists**
+   (`VISA_POSITIVE_PATTERNS`, `VISA_NEGATIVE_PATTERNS`/
+   `NO_SPONSORSHIP_PATTERNS`) that `matching/scoring.py`'s
+   `_visa_relocation_component` and `matching/hard_filters.py`'s
+   no-sponsorship check previously each maintained as byte-identical private
+   copies. Both call sites now import from the shared module; the compiled
+   patterns and matching behaviour are unchanged.
+4. **Evidence precedence is never blended**: `assess_visa` starts from
+   `unknown`; an `employer_eligible` registry match sets both status and
+   confidence to the registry match's own (capped, ~0.7) confidence;
+   job-text evidence is applied last and can raise to `confirmed_yes` or
+   override down to `confirmed_no` *regardless* of a registry match — a
+   specific "we cannot sponsor this role" statement in a job posting is
+   more specific than a general employer-eligibility signal and must win.
+   `confidence` on the returned `VisaAssessment` is always the confidence of
+   whichever evidence source actually set the final status, never an
+   average of the two.
+5. **UK Home Office "Register of licensed sponsors: workers" is the only
+   implemented provider** (D-042 mandatory scope); the Netherlands IND
+   Recognised Sponsors register is deferred and kept only as a disabled,
+   present placeholder in `sponsor_registries.example.yaml` and as a
+   `SponsorRegisterParseError` branch in
+   `import_sponsor_register`/`load_sponsor_registries_config`'s config
+   surface — proving the import framework is register-agnostic without
+   building a second parser this milestone.
+6. **Exact normalized-name + country matching only** — `find_sponsor_match`
+   reuses `deduplication.normalize_company` (the same normaliser
+   cross-source job dedup already uses) as the join key, with no
+   fuzzy/Levenshtein/alias matching (R-9, explicitly deferred). A registry
+   match means "may be eligible to sponsor in general," never "will
+   sponsor this specific vacancy" (CLAUDE.md hard constraint 4); confidence
+   is capped below "confirmed" (`SPONSOR_REGISTRY_MATCH_CONFIDENCE = 0.7`)
+   to reflect real subsidiary/trading-name false-positive risk.
+7. **`job-scout sponsors import <file> --country <CC> --register <name>`**
+   parses a file the user has already downloaded and replaces (DELETE +
+   INSERT, never appends) the stored rows for that `(country,
+   register_name)` pair — the only way `sponsor_registry_entries` is ever
+   written; nothing in this module opens a live connection to a government
+   register (CLAUDE.md hard constraint 1).
+8. **`sponsor_registries.yaml` is metadata only** (`SponsorRegisterConfig`:
+   `country`, `register_name`, `enabled`) — which registers an installation
+   has set up, never the register data itself, matching D-009's YAML-first/
+   no-database-copy-of-config principle in the other direction (the
+   register *data* lives only in SQLite, never YAML). `job-scout` never
+   writes back to this file after an import.
+**Alternatives**: A single shared `_SCHEMA_VERSION` bump combining Task 9 and
+Task 10's schema objects (rejected — MILESTONE_2.md's "Persistence
+implications" explicitly requires each task's schema change to own its own
+increment, so a database stamped `2` unambiguously means exactly Task 9's
+shape, never Task 9 plus an unknown subset of Task 10's). Indexing both new
+`visa_assessments` columns (rejected for now — no stated filter use case for
+`employer_registry_match` yet; trivial to add a second `CREATE INDEX IF NOT
+EXISTS` in a later task if one emerges, same low-risk-to-add-later posture
+this project already takes with schema growth). Fuzzy/alias sponsor-name
+matching (rejected — explicitly out of scope per R-9 and the task's own
+instruction; a subsidiary/trading-name miss is an accepted false negative
+this milestone, not a bug).
+**Why**: Same evidence-bar-first, additive-only, no-two-shapes-one-version
+discipline as D-038/D-049 for the schema work; same "reuse the existing
+normaliser rather than inventing a second one" discipline as D-040 for
+`normalize_company`; same "evidence precedence, never blended" discipline
+CLAUDE.md hard constraint 4/5 already requires for every visa/match
+conclusion in this codebase.

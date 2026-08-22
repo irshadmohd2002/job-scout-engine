@@ -39,10 +39,20 @@ from job_scout.pipeline import RunOnceResult, run_once
 from job_scout.repository.sqlite_repo import SqliteJobRepository
 from job_scout.source_intelligence.planner import build_plan
 from job_scout.source_intelligence.registry import load_registry
+from job_scout.source_intelligence.sponsor_registry import (
+    SponsorRegisterParseError,
+    import_sponsor_register,
+)
 
 PACKAGE_DISTRIBUTION_NAME = "job-scout-engine"
 
 app = typer.Typer(help="Job Scout Engine — deterministic job-monitoring and matching CLI.")
+
+sponsors_app = typer.Typer(
+    help="Sponsor-register import (Milestone 2 Deliverable 5 step 10). "
+    "Never downloads anything itself — always a file you've already downloaded."
+)
+app.add_typer(sponsors_app, name="sponsors")
 
 _DATA_DIR_HELP = (
     "Root data directory for config/database/logs/cache (default: "
@@ -527,6 +537,57 @@ def run_once_command(
     if _all_source_runs_failed(result):
         typer.echo("All executable source runs failed — see errors above.", err=True)
         raise typer.Exit(code=1)
+
+
+@sponsors_app.command(name="import")
+def sponsors_import_command(
+    file: Path = typer.Argument(..., help="Path to an already-downloaded register CSV export."),
+    country: str = typer.Option(
+        ..., "--country", help="ISO 3166-1 alpha-2 country code the register covers, e.g. GB."
+    ),
+    register: str = typer.Option(
+        ...,
+        "--register",
+        help="Register identifier, e.g. uk_home_office_sponsor_list — the only register "
+        "implemented in Milestone 2.",
+    ),
+    db_path: Path | None = typer.Option(
+        None,
+        "--db-path",
+        help="Path to the SQLite database (default: JOB_SCOUT_DB_PATH, else resolved "
+        "from --data-dir).",
+    ),
+    env_path: Path | None = typer.Option(None, "--env-file"),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
+) -> None:
+    """Parses a user-supplied sponsor-register CSV snapshot and replaces the
+    stored rows for (country, register) — never fetches or downloads
+    anything itself (CLAUDE.md hard constraint 1)."""
+    if not file.exists():
+        typer.echo(f"Sponsor register file not found: {file}", err=True)
+        raise typer.Exit(code=1)
+    try:
+        csv_text = file.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"Could not read sponsor register file: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    env = load_env(env_path, data_dir=data_dir)
+    resolved_db_path = db_path or env.db_path
+    try:
+        with SqliteJobRepository(resolved_db_path) as repository:
+            imported_count = import_sponsor_register(
+                repository, csv_text, country=country, register_name=register
+            )
+    except SponsorRegisterParseError as exc:
+        typer.echo(f"Sponsor register import error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    typer.echo(
+        f"Imported {imported_count} sponsor register entr"
+        f"{'y' if imported_count == 1 else 'ies'} for country={country.upper()} "
+        f"register={register}."
+    )
 
 
 if __name__ == "__main__":

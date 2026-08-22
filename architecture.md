@@ -201,6 +201,17 @@ Milestone 1 (no sponsor-registry enrichment yet — see `decisions.md` D-006).
 `status` in M1 is derived only from job-text evidence, so it typically resolves
 to `unknown`, `likely`, or `confirmed_no`, rarely `confirmed_yes`.
 
+M2 update (Milestone 2 Deliverable 5 step 10, §21): `matching/visa.py
+::assess_visa` is now actually called, from `pipeline.py::run_once`, once per
+job that reaches Stage 5 scoring, and `repository.save_visa_assessment` is
+called with the result. `employer_registry_match`/
+`employer_registry_match_confidence`/`registry_source` are now populated
+whenever `source_intelligence/sponsor_registry.py::find_sponsor_match` finds
+an authoritative match; `status` can resolve to `employer_eligible` (registry
+match only) or `confirmed_yes` (job-text evidence), not just `unknown`/
+`likely`/`confirmed_no` as before. The model's own shape is unchanged — only
+the values it's actually constructed with are new.
+
 ### 2.13 `SourceRun`
 `run_id`, `source_id`, `search_profile_ref`, `started_at`, `completed_at`,
 `status` (enum: `success|partial|failed`), `jobs_fetched`, `jobs_new`,
@@ -356,9 +367,22 @@ class JobRepository(Protocol):
     def list_recent_jobs(self, since: datetime, limit: int = 200) -> list[Job]: ...
     def list_provenance(self, job_id: str) -> list[SourceProvenance]: ...
 
+    # save_visa_assessment is fully implemented and actually called as of
+    # Milestone 2 Deliverable 5 step 10 (§21) — no longer a reserved stub.
+    def save_visa_assessment(self, assessment: VisaAssessment) -> None: ...
+
+    # Milestone 2 Deliverable 5 step 10 (§21): sponsor-register persistence,
+    # behind the same Protocol as everything else — source_intelligence/
+    # sponsor_registry.py never opens its own SQLite connection.
+    def replace_sponsor_registry_entries(
+        self, country: str, register_name: str, entries: list[SponsorRegistryEntry]
+    ) -> None: ...
+    def find_sponsor_registry_entry(
+        self, normalized_name: str, country: str
+    ) -> SponsorRegistryEntry | None: ...
+
     # Defined for interface stability; no-op or NotImplementedError-free stub
     # in M1's SQLite implementation until the relevant milestone lands.
-    def save_visa_assessment(self, assessment: VisaAssessment) -> None: ...
     def save_notification(self, record: NotificationRecord) -> None: ...
     def save_feedback(self, feedback: UserFeedback) -> None: ...
     def save_application_status(self, status: ApplicationStatus) -> None: ...
@@ -369,10 +393,11 @@ M1 ships `SqliteJobRepository` implementing the first six methods fully
 (`jobs`, `source_provenance`, `source_runs`, `match_results`,
 `job_fingerprints` tables) with real schema. `list_provenance` was added in
 Milestone 2 Deliverable 5 step 9 (§20) — a read method over the
-already-existing `source_provenance` table, not a schema change. The
-remaining methods exist on the Protocol and have a table reserved in the
-SQLite schema, but the schema migration for them can lag — the *interface*
-is what must not change.
+already-existing `source_provenance` table, not a schema change.
+`save_visa_assessment` and the two sponsor-registry methods were completed
+in Milestone 2 Deliverable 5 step 10 (§21). The remaining methods exist on
+the Protocol and have a table reserved in the SQLite schema, but the schema
+migration for them can lag — the *interface* is what must not change.
 
 **Config vs. database boundary**: `CandidateProfile`, `SearchProfile`, and
 `SourceRegistryEntry` are YAML-first in every milestone through M1; the
@@ -1520,3 +1545,104 @@ the only genuine gap was a missing read method, now added:
 returning every observation for a job in fetch order (`ORDER BY id ASC`, i.e.
 insertion order — `first_seen_at`/`last_seen_at` per source are a `MIN`/
 `MAX(fetched_at)` computed by the caller over this list, not a stored column).
+
+## 21. Milestone 2 Deliverable 5 step 10: sponsor registry, UK provider, and
+visa enrichment (implemented)
+
+`VisaAssessment` (§2.12) is now actually constructed and persisted, per
+scored job, instead of existing only as a reserved-but-unwritten model
+(decisions.md D-006/D-050; MILESTONE_2.md "Sponsorship/visa enrichment
+design"):
+
+- **New module `matching/visa.py`**: `assess_visa(job, candidate, search,
+  registry_match, country_regime) -> VisaAssessment`. `candidate`/`search`
+  are accepted for signature parity but never read — work-authorisation
+  fields are Stage 1 hard-filter inputs (existing
+  `requires_work_authorisation_support` behaviour in `hard_filters.py`), not
+  evidence about a specific job, and must never feed `status`. Evidence
+  precedence (never blended, decisions.md D-050 point 4): start from
+  `unknown`; an authoritative sponsor-registry match raises status to
+  `employer_eligible` at the match's own (capped, ~0.7) confidence;
+  job-text evidence is applied last — positive wording raises to
+  `confirmed_yes`, explicit negative wording sets `confirmed_no`
+  **regardless** of a registry match. `confidence` on the result is always
+  the confidence of whichever evidence source actually set the final
+  status.
+- **New module `matching/visa_patterns.py`**: the single source of truth for
+  `VISA_POSITIVE_PATTERNS`, `VISA_NEGATIVE_PATTERNS` (aliased as
+  `NO_SPONSORSHIP_PATTERNS`), and `first_match()` — previously
+  `matching/scoring.py`'s `_visa_relocation_component` and
+  `matching/hard_filters.py`'s no-sponsorship check each carried a
+  byte-identical private copy of these regex lists; both now import from
+  here instead. No matching-behaviour change (decisions.md D-050 point 3).
+- **New module `source_intelligence/sponsor_registry.py`**:
+  `parse_uk_home_office_csv` (validates the real gov.uk "Register of
+  licensed sponsors: workers" export header, raising
+  `SponsorRegisterParseError` on a mismatch), `import_sponsor_register`
+  (parses + calls `repository.replace_sponsor_registry_entries`, replacing
+  — never appending to — the rows for a given `(country, register_name)`
+  pair), and `find_sponsor_match(repository, company_name, country) ->
+  SponsorRegistryMatch | None` (exact-normalized-name + country lookup via
+  `deduplication.normalize_company`, the same normaliser cross-source job
+  dedup already uses; returns `None` rather than a `matched=False` object
+  when nothing is found). UK is the only implemented provider (D-042
+  mandatory scope); no fuzzy/alias matching (R-9) and no live
+  download/scrape of any kind — every import is a file the user already
+  downloaded.
+- **`pipeline.py::run_once` wiring**: for every job whose `MatchResult
+  .final_score is not None` (i.e. it reached Stage 5 scoring — a job
+  rejected at Stage 1 or filtered at Stage 2 never reached Stage 5 and gets
+  no `VisaAssessment` either), the pipeline looks up a registry match via
+  `find_sponsor_match`, resolves a country-level regime label via
+  `countries.py::resolve_work_permit_regime`, calls `assess_visa`, and
+  persists the result via `repository.save_visa_assessment`. This is
+  orchestration wiring beside Stage 5, not a new pipeline stage — it never
+  feeds back into Stage 5's own separate `visa_relocation` `ScoreComponent`
+  (`matching/scoring.py`), which is unchanged.
+- **`countries.py::resolve_work_permit_regime(country) -> str`**: a
+  best-effort, region-granularity (never per-country) structural-context
+  label for `VisaAssessment.country_work_permit_regime` — a plain
+  module-level dict keyed by the existing region constants, never raising
+  (an unrecognised country resolves to a generic placeholder string). Never
+  scored on its own.
+- **Schema** (`_SCHEMA_VERSION` `2`→`3` — see §15.6 and decisions.md D-050
+  for why this is its own increment, not a reuse of Task 9's `2`):
+  - New table `sponsor_registry_entries` (`country`, `registered_name`,
+    `normalized_name`, `register_name`, `license_status`, `imported_at`),
+    indexed on `(country, normalized_name)` for `find_sponsor_match`'s join.
+    `job-scout sponsors import` replaces (`DELETE` then `INSERT`) the rows
+    for the given `(country, register_name)` pair on every import.
+  - `visa_assessments` (reserved since M1 as `(job_id, data)` only) gains
+    two columns via an idempotent, `PRAGMA table_info`-checked `ALTER
+    TABLE ... ADD COLUMN`, run unconditionally on every open since a plain
+    `CREATE TABLE IF NOT EXISTS` can't widen an existing table: `status
+    TEXT` (indexed, `idx_visa_assessments_status`, so a future
+    query/report command can filter by visa status without deserialising
+    every row's JSON) and `employer_registry_match INTEGER` (denormalized
+    alongside the JSON blob, same pattern `match_results` already uses for
+    `notification_tier`/`final_score`, but not itself indexed — no stated
+    filter use case yet).
+  - A database stamped `1` or `2` opens under this code and upgrades to `3`
+    the same no-op, additive way every prior version bump has; a database
+    stamped newer than `3` still refuses to run via the existing
+    `SchemaVersionError`.
+- **CLI**: `job-scout sponsors import <file> --country <CC> --register
+  <name> [--db-path] [--data-dir] [--env-file]` — parses a file the user has
+  already downloaded and reports the number of entries imported; never
+  fetches anything itself. `<name>` must be a register `import_sponsor_register`
+  recognises (`uk_home_office_sponsor_list` in M2); an unknown name or a
+  missing file exits non-zero with a message, never a traceback.
+- **Config**: `sponsor_registries.yaml` (new template, copied by `job-scout
+  init` alongside the existing seven) is metadata only —
+  `SponsorRegisterConfig(country, register_name, enabled)` via
+  `config.py::load_sponsor_registries_config` — naming which registers an
+  installation has set up, never the register data itself (that lives only
+  in `sponsor_registry_entries`, written only by `sponsors import`).
+  `AppPaths.sponsor_registries_path` follows the same
+  never-copied-back-into-the-repo, per-user-data-directory convention as
+  `company_watchlist_path` (§15.1).
+- **`models.py`**: `SponsorRegistryEntry` (one imported register row) and
+  `SponsorRegistryMatch` (a lookup result: `matched`, `registered_name`,
+  `register_name`, `confidence`) — new models; `VisaAssessment`/`VisaStatus`
+  themselves are unchanged (§2.12's M2 update above documents the new
+  *values* they're constructed with, not a schema change).

@@ -92,3 +92,40 @@ def resolve_regions(country: str) -> list[str]:
 
 def is_known_country(country: str) -> bool:
     return country.upper() in COUNTRY_REGIONS
+
+
+# --- Work-permit regime labels (Milestone 2 Deliverable 5 step 10) ---------
+# A small, region-granularity (never per-country) context label for
+# VisaAssessment.country_work_permit_regime — a generic structural prior
+# only, never scored on its own (MILESTONE_2.md "Evidence precedence" #3;
+# architecture.md section 5). Kept as a plain module-level dict, the same
+# shape as COUNTRY_REGIONS above, rather than a new YAML surface — this is
+# static architecture-lookup data, not per-run candidate/search config.
+_UNKNOWN_REGIME = "unspecified_work_permit_regime"
+
+REGION_WORK_PERMIT_REGIMES: dict[str, str] = {
+    REGION_UK: "uk_points_based_system",
+    REGION_EUROPE: "eu_or_efta_national_visa_regime",
+    REGION_MIDDLE_EAST: "gcc_employer_sponsored_regime",
+    REGION_SOUTH_ASIA: "south_asia_general_work_permit_regime",
+    REGION_SOUTHEAST_ASIA: "southeast_asia_general_work_permit_regime",
+    REGION_NORTH_AMERICA: "north_america_employer_sponsored_regime",
+    REGION_ANZ: "anz_points_based_system",
+}
+
+
+def resolve_work_permit_regime(country: str) -> str:
+    """Best-effort region-level regime label for `country`. Never raises —
+    an unrecognised country code (or a region with no label configured)
+    resolves to a generic `_UNKNOWN_REGIME` string rather than aborting a
+    visa assessment; this is a low-confidence context string, not a value
+    correctness depends on."""
+    try:
+        regions = resolve_regions(country)
+    except UnknownCountryError:
+        return _UNKNOWN_REGIME
+    for region in regions:
+        label = REGION_WORK_PERMIT_REGIMES.get(region)
+        if label is not None:
+            return label
+    return _UNKNOWN_REGIME

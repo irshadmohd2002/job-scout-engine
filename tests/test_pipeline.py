@@ -432,6 +432,113 @@ def test_search_profile_target_title_reaches_scoring_while_irrelevant_and_hard_f
         assert job_count == 3  # all three persisted regardless of outcome
 
 
+def test_run_once_persists_visa_assessment_for_every_stage5_job(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """MILESTONE_2.md Deliverable 5 step 10 acceptance criterion:
+    VisaAssessment is constructed and persisted (repository.save_visa_assessment)
+    for every job that reaches Stage 5 scoring."""
+    candidate = make_candidate_profile(
+        title_aliases=["Strategy Manager"], role_families=["strategy_and_planning"]
+    )
+    search = make_search_profile(included_countries=["GB"])
+    registry = [_adzuna_registry_entry()]
+    fake_adapter = _FakeAdapter(_make_records(["1", "2"]))
+
+    with SqliteJobRepository(tmp_path / "db.sqlite3") as repo:
+        result = run_once(
+            candidate_profile=candidate,
+            search_profile=search,
+            registry=registry,
+            execution_limits=_limits(),
+            scoring_weights=_weights(),
+            source_scoring_weights=_source_weights(),
+            repository=repo,
+            env=_env(),
+            dry_run=False,
+            adapter_factory=lambda source_id: fake_adapter,
+        )
+        assert len(result.results) == 2
+        assert all(match.final_score is not None for _job, match in result.results)
+
+        visa_count = repo._conn.execute("SELECT COUNT(*) FROM visa_assessments").fetchone()[0]
+        assert visa_count == 2
+        job_ids = {job.job_id for job, _match in result.results}
+        persisted_ids = {
+            row[0] for row in repo._conn.execute("SELECT job_id FROM visa_assessments")
+        }
+        assert persisted_ids == job_ids
+
+
+def test_run_once_does_not_persist_visa_assessment_for_non_stage5_job(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    """A job that never reaches Stage 5 (store_only/rejected) gets no
+    VisaAssessment either — persisted 1:1 with match_results.final_score,
+    reusing the target-title fixture from
+    test_search_profile_target_title_reaches_scoring_while_irrelevant_and_hard_filtered_jobs_do_not."""
+    candidate = make_candidate_profile(
+        title_aliases=[], role_families=[], primary_skills=[], secondary_skills=[]
+    )
+    search = make_search_profile(
+        included_countries=["GB"], target_titles=["Chief of Staff"], role_families=[]
+    )
+    registry = [_adzuna_registry_entry()]
+
+    records = [
+        RawJobRecord(
+            source_id="adzuna_api",
+            external_id="relevant",
+            raw_url="https://example.com/jobs/relevant",
+            raw_payload=_custom_payload(
+                "relevant", "Chief of Staff", "Support the CEO office, 4-8 years experience."
+            ),
+            fetched_at=datetime.now(UTC),
+        ),
+        RawJobRecord(
+            source_id="adzuna_api",
+            external_id="irrelevant",
+            raw_url="https://example.com/jobs/irrelevant",
+            raw_payload=_custom_payload(
+                "irrelevant",
+                "Recruitment Consultant",
+                "Assist clients with recruitment across sectors, 4-8 years experience.",
+            ),
+            fetched_at=datetime.now(UTC),
+        ),
+        RawJobRecord(
+            source_id="adzuna_api",
+            external_id="hard_filtered",
+            raw_payload=_custom_payload(
+                "hard_filtered",
+                "Chief of Staff",
+                "We are unable to offer sponsorship for this role, 4-8 years experience.",
+            ),
+            raw_url="https://example.com/jobs/hard_filtered",
+            fetched_at=datetime.now(UTC),
+        ),
+    ]
+    fake_adapter = _FakeAdapter(records)
+
+    with SqliteJobRepository(tmp_path / "db.sqlite3") as repo:
+        result = run_once(
+            candidate_profile=candidate,
+            search_profile=search,
+            registry=registry,
+            execution_limits=_limits(),
+            scoring_weights=_weights(),
+            source_scoring_weights=_source_weights(),
+            repository=repo,
+            env=_env(),
+            dry_run=False,
+            adapter_factory=lambda source_id: fake_adapter,
+        )
+
+        by_id = {job.external_ids[0].external_id: job for job, _match in result.results}
+        visa_job_ids = {
+            row[0] for row in repo._conn.execute("SELECT job_id FROM visa_assessments")
+        }
+        assert visa_job_ids == {by_id["relevant"].job_id}
+
+
 def test_unconfigured_adapter_produces_isolated_failed_run_not_a_crash(tmp_path) -> None:  # type: ignore[no-untyped-def]
     candidate = make_candidate_profile()
     search = make_search_profile(included_countries=["GB"])

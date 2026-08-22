@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 
+from job_scout.matching.visa_patterns import NO_SPONSORSHIP_PATTERNS
 from job_scout.models import CandidateProfile, HardFilterResult, Job, RejectionReason, SearchProfile
 
 _RANGE_RE = re.compile(r"(\d{1,2})\s*(?:-|to|–)\s*(\d{1,2})\s*\+?\s*years?", re.IGNORECASE)
@@ -48,17 +49,6 @@ _EXISTING_AUTH_PATTERNS = [
         r"must have current work authori[sz]ation",
     ]
 ]
-
-_NO_SPONSORSHIP_PATTERNS = [
-    re.compile(p, re.IGNORECASE)
-    for p in [
-        r"(?:not able|unable) to (?:offer|provide) sponsorship",
-        r"cannot sponsor",
-        r"no (?:visa )?sponsorship (?:is )?(?:available|offered|provided)",
-        r"does not offer (?:visa )?sponsorship",
-    ]
-]
-
 
 def parse_experience_range(text: str) -> tuple[float, float] | None:
     """Best-effort numeric-range heuristic (risk R-3). Returns None — never
@@ -204,7 +194,7 @@ def evaluate_hard_filters(
             )
 
     if search.reject_on_explicit_no_sponsorship:
-        sponsorship_evidence = _first_match(_NO_SPONSORSHIP_PATTERNS, text)
+        sponsorship_evidence = _first_match(NO_SPONSORSHIP_PATTERNS, text)
         if sponsorship_evidence:
             rejections.append(
                 RejectionReason(

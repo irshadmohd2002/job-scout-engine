@@ -244,6 +244,50 @@ def load_company_watchlist(
     return parsed.companies
 
 
+# --- SponsorRegisterConfig ---------------------------------------------------
+# Milestone 2 Deliverable 5 step 10 (MILESTONE_2.md "config.py"): metadata
+# only — which registers are enabled — never the imported register data
+# itself (that lives in the `sponsor_registry_entries` SQLite table, written
+# only by `job-scout sponsors import`). Same "no packaged-template fallback,
+# user-specific" treatment as CompanyWatchlistEntry above (decisions.md
+# D-050): the engine never writes this file back (D-009's YAML-first
+# principle), so there is no "last_imported_at"/row-count field here — that
+# state genuinely lives only in the database.
+
+
+class SponsorRegisterConfig(BaseModel):
+    country: str
+    register_name: str
+    enabled: bool = True
+
+
+class _SponsorRegistriesFile(BaseModel):
+    registers: list[SponsorRegisterConfig] = []
+
+
+def load_sponsor_registries_config(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> list[SponsorRegisterConfig]:
+    resolved = path or resolve_app_paths(data_dir_override=data_dir).sponsor_registries_path
+    data = _read_yaml(resolved)
+    try:
+        parsed = _SponsorRegistriesFile.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError.from_validation_error(resolved, exc) from exc
+    seen: set[tuple[str, str]] = set()
+    for register in parsed.registers:
+        key = (register.country, register.register_name)
+        if key in seen:
+            raise ConfigError(
+                f"Duplicate sponsor register entry for country '{register.country}' "
+                f"register_name '{register.register_name}'.",
+                file=resolved,
+                field="registers[].register_name",
+            )
+        seen.add(key)
+    return parsed.registers
+
+
 # --- ExecutionLimits ----------------------------------------------------------
 
 

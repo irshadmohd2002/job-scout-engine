@@ -650,3 +650,40 @@ class CompanyWatchlistEntry(BaseModel):
     external_company_key: str
     priority: int
     notes: str | None = None
+
+
+# --- Sponsor registry (Milestone 2 Deliverable 5 step 10) -------------------
+# One row per imported register entry (`SponsorRegistryEntry`) and the lookup
+# result `source_intelligence/sponsor_registry.py::find_sponsor_match` returns
+# (`SponsorRegistryMatch`). A registry match means the employer is
+# licensed/recognised to sponsor in general — never that a specific vacancy
+# offers sponsorship (CLAUDE.md hard constraint 4); `matching/visa.py`'s
+# evidence precedence is what turns a match into a VisaAssessment.status.
+
+
+class SponsorRegistryEntry(BaseModel):
+    """One row of an imported sponsor-register snapshot (e.g. the UK Home
+    Office licensed-sponsor register). `normalized_name` is produced by
+    `deduplication.normalize_company` — the same normaliser used for
+    cross-source job dedup, reused rather than duplicated (decisions.md
+    D-042/MILESTONE_2.md "Employer-name normalisation")."""
+
+    country: str
+    registered_name: str
+    normalized_name: str
+    register_name: str
+    license_status: str | None = None
+    imported_at: datetime
+
+
+class SponsorRegistryMatch(BaseModel):
+    """Result of `find_sponsor_match(company_name, country)`. Exact
+    normalized-name matching only (no fuzzy/alias matching, R-9) — `matched`
+    is always True on any non-None `find_sponsor_match` return; `confidence`
+    is capped below "confirmed" (approx. 0.7) since an exact-name match still
+    carries real subsidiary/trading-name false-positive risk."""
+
+    matched: bool
+    registered_name: str | None = None
+    register_name: str | None = None
+    confidence: float

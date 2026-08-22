@@ -27,6 +27,7 @@ _TEMPLATE_TARGETS: tuple[tuple[str, str], ...] = (
     ("scoring_weights.example.yaml", "scoring_weights_path"),
     ("source_scoring_weights.example.yaml", "source_scoring_weights_path"),
     ("company_watchlist.example.yaml", "company_watchlist_path"),
+    ("sponsor_registries.example.yaml", "sponsor_registries_path"),
 )
 
 

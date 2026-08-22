@@ -29,6 +29,7 @@ TEMPLATE_NAMES: tuple[str, ...] = (
     "scoring_weights.example.yaml",
     "source_scoring_weights.example.yaml",
     "company_watchlist.example.yaml",
+    "sponsor_registries.example.yaml",
 )
 
 

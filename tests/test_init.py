@@ -30,10 +30,11 @@ def test_first_run_creates_expected_directories_and_files(tmp_path: Path) -> Non
     assert app_paths.scoring_weights_path.exists()
     assert app_paths.source_scoring_weights_path.exists()
     assert app_paths.company_watchlist_path.exists()
+    assert app_paths.sponsor_registries_path.exists()
     assert app_paths.database_path.exists()
 
     assert len(result.created_dirs) >= 4
-    assert len(result.created_files) == 7
+    assert len(result.created_files) == 8
     assert result.skipped_files == []
     assert result.database_created is True
 

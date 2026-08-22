@@ -37,6 +37,7 @@ from job_scout.matching.normalize import (
     normalize_tokens,
 )
 from job_scout.matching.prefilter import PrefilterWeights, keyword_overlap
+from job_scout.matching.visa_patterns import VISA_NEGATIVE_PATTERNS, VISA_POSITIVE_PATTERNS
 from job_scout.models import (
     CandidateProfile,
     HardFilterResult,
@@ -48,26 +49,6 @@ from job_scout.models import (
     ScoreComponent,
     SearchProfile,
 )
-
-_VISA_POSITIVE_PATTERNS = [
-    re.compile(p, re.IGNORECASE)
-    for p in [
-        r"visa sponsorship (?:is )?(?:available|provided|offered)",
-        r"relocation (?:assistance|support|package)",
-        r"we (?:will |can )?sponsor",
-        r"work permit sponsorship",
-    ]
-]
-
-_VISA_NEGATIVE_PATTERNS = [
-    re.compile(p, re.IGNORECASE)
-    for p in [
-        r"(?:not able|unable) to (?:offer|provide) sponsorship",
-        r"cannot sponsor",
-        r"no (?:visa )?sponsorship (?:is )?(?:available|offered|provided)",
-        r"does not offer (?:visa )?sponsorship",
-    ]
-]
 
 
 def _first_match(patterns: list[re.Pattern[str]], text: str) -> str | None:
@@ -723,7 +704,7 @@ def _education_component(job: Job, candidate: CandidateProfile, weight: float) -
 
 def _visa_relocation_component(job: Job, weight: float) -> ScoreComponent:
     text = job.description_text
-    positive = _first_match(_VISA_POSITIVE_PATTERNS, text)
+    positive = _first_match(VISA_POSITIVE_PATTERNS, text)
     if positive:
         return ScoreComponent(
             name="visa_relocation",
@@ -732,7 +713,7 @@ def _visa_relocation_component(job: Job, weight: float) -> ScoreComponent:
             weighted_value=weight * 1.0,
             evidence=[positive],
         )
-    negative = _first_match(_VISA_NEGATIVE_PATTERNS, text)
+    negative = _first_match(VISA_NEGATIVE_PATTERNS, text)
     if negative:
         # Explicit negative evidence, not just "no evidence" neutral (Part
         # 6) -> pulls the component below the not_evaluable baseline.

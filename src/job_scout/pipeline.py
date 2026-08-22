@@ -38,10 +38,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from job_scout.config import EnvConfig, ExecutionLimits, ScoringWeights, SourceScoringWeights
+from job_scout.countries import resolve_work_permit_regime
 from job_scout.deduplication import DedupTier, compute_fingerprint, match_against_recent
 from job_scout.matching.hard_filters import evaluate_hard_filters
 from job_scout.matching.prefilter import PrefilterWeights, run_prefilter
 from job_scout.matching.scoring import build_match_result
+from job_scout.matching.visa import assess_visa
 from job_scout.models import (
     CandidateProfile,
     CompanyWatchlistEntry,
@@ -61,6 +63,7 @@ from job_scout.models import (
 from job_scout.repository.base import JobRepository
 from job_scout.source_intelligence.compliance import authorize
 from job_scout.source_intelligence.planner import build_plan
+from job_scout.source_intelligence.sponsor_registry import find_sponsor_match
 from job_scout.sources.adzuna import AdzunaAdapter
 from job_scout.sources.base import SourceAdapter, SourceAdapterError
 from job_scout.sources.greenhouse import GreenhouseAdapter
@@ -714,6 +717,27 @@ def run_once(
                 scoring_weights,
             )
             repository.save_match_result(match_result)
+
+            # Milestone 2 Deliverable 5 step 10: a VisaAssessment is
+            # constructed and persisted for every job that reaches Stage 5
+            # scoring (final_score is not None <=> score_components is
+            # non-empty, see matching/scoring.py::build_match_result) — a
+            # job rejected at Stage 1 or filtered out at Stage 2 never
+            # reached Stage 5, so it gets no VisaAssessment either.
+            if match_result.final_score is not None:
+                registry_match = find_sponsor_match(
+                    repository, effective_job.company, effective_job.location.country
+                )
+                country_regime = resolve_work_permit_regime(effective_job.location.country)
+                visa_assessment = assess_visa(
+                    effective_job,
+                    candidate_profile,
+                    search_profile,
+                    registry_match,
+                    country_regime,
+                )
+                repository.save_visa_assessment(visa_assessment)
+
             results.append((effective_job, match_result))
 
         run.status = SourceRunStatus.PARTIAL if (hit_cap or run.errors) else SourceRunStatus.SUCCESS

@@ -20,6 +20,7 @@ from job_scout.models import (
     SourcePerformance,
     SourceProvenance,
     SourceRun,
+    SponsorRegistryEntry,
     UserFeedback,
     VisaAssessment,
 )
@@ -44,3 +45,14 @@ class JobRepository(Protocol):
     def save_feedback(self, feedback: UserFeedback) -> None: ...
     def save_application_status(self, status: ApplicationStatus) -> None: ...
     def save_source_performance(self, perf: SourcePerformance) -> None: ...
+
+    # Milestone 2 Deliverable 5 step 10 (MILESTONE_2.md "Sponsorship/visa
+    # enrichment design"): sponsor-register persistence goes through the same
+    # JobRepository abstraction as everything else — source_intelligence/
+    # sponsor_registry.py never opens its own SQLite connection.
+    def replace_sponsor_registry_entries(
+        self, country: str, register_name: str, entries: list[SponsorRegistryEntry]
+    ) -> None: ...
+    def find_sponsor_registry_entry(
+        self, normalized_name: str, country: str
+    ) -> SponsorRegistryEntry | None: ...
