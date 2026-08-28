@@ -1,4 +1,5 @@
-"""Typer CLI: `init`, `version`, `plan`, `run-once`."""
+"""Typer CLI: `init`, `version`, `plan`, `run-once`, `sponsors import`,
+`evaluate`."""
 
 from __future__ import annotations
 
@@ -22,6 +23,12 @@ from job_scout.config import (
     load_scoring_weights,
     load_search_profiles,
     load_source_scoring_weights,
+)
+from job_scout.evaluation import (
+    EvaluationDatasetError,
+    EvaluationReport,
+    load_evaluation_dataset,
+    run_evaluation,
 )
 from job_scout.models import (
     CandidateProfile,
@@ -588,6 +595,104 @@ def sponsors_import_command(
         f"{'y' if imported_count == 1 else 'ies'} for country={country.upper()} "
         f"register={register}."
     )
+
+
+def _format_evaluation_human(report: EvaluationReport, *, profile: str, dataset: Path) -> str:
+    lines: list[str] = []
+    lines.append(f"Evaluation report for search profile '{profile}' (dataset: {dataset})")
+    lines.append(f"fixtures: {report.dataset_size}")
+    lines.append("label counts: " + ", ".join(f"{k}={v}" for k, v in report.label_counts.items()))
+    lines.append("")
+    lines.append(
+        "All scores below are relevance scores — a deterministic, weighted-sum ranking "
+        "signal, not a calibrated confidence percentage."
+    )
+    lines.append("")
+    lines.append("Metrics:")
+    lines.append(
+        f"  precision@5={report.precision_at_5:.3f}  precision@10={report.precision_at_10:.3f}  "
+        f"precision@20={report.precision_at_20:.3f}"
+    )
+    lines.append(f"  recall_of_strong_matches={report.recall_of_strong_matches:.3f}")
+    lines.append(f"  false_positive_rate={report.false_positive_rate:.3f}")
+    lines.append(f"  hard_filter_correctness={report.hard_filter_correctness:.3f}")
+    lines.append(f"  ranking_inversions={report.ranking_inversions}")
+    for higher, lower in report.ranking_inversion_pairs:
+        lines.append(f"    inversion: '{higher}' should outrank '{lower}' but did not")
+    lines.append("")
+    lines.append("Threshold-tier distribution (label x notification_tier):")
+    for label, tiers in report.tier_distribution.items():
+        tier_text = ", ".join(f"{tier}={count}" for tier, count in tiers.items())
+        lines.append(f"  {label}: {tier_text}")
+    lines.append("")
+    lines.append("Fixtures:")
+    for r in report.fixture_results:
+        score = f"{r.final_score:.2f}" if r.final_score is not None else "unscored"
+        lines.append(
+            f"  - [{r.label}] {r.job_id}: relevance_score={score} tier={r.notification_tier} "
+            f"hard_filter_passed={r.hard_filter_passed}"
+        )
+        lines.append(f"      rationale: {r.rationale}")
+    return "\n".join(lines)
+
+
+@app.command()
+def evaluate(
+    profile: str = typer.Option(..., "--profile", help="Search profile id to evaluate against."),
+    dataset: Path = typer.Option(
+        ..., "--dataset", help="Path to a labelled evaluation dataset YAML file."
+    ),
+    candidate_profile: Path | None = typer.Option(
+        None,
+        "--candidate-profile",
+        help="Path to candidate_profile.yaml (default: resolved from --data-dir).",
+    ),
+    search_profiles: Path | None = typer.Option(
+        None,
+        "--search-profiles",
+        help="Path to search_profiles.yaml (default: resolved from --data-dir).",
+    ),
+    scoring_weights_path: Path | None = typer.Option(
+        None,
+        "--scoring-weights",
+        help="Path to scoring_weights.yaml (default: resolved from --data-dir, falling back "
+        "to the packaged template).",
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the full structured evaluation report as JSON."
+    ),
+) -> None:
+    """Run Stage 1/2/5 matching against a labelled fixture dataset and print
+    precision@5/@10/@20, recall of labelled strong matches, false-positive
+    rate, hard-filter correctness, ranking inversions, and threshold-tier
+    distribution (MILESTONE_2.md Workstream E; decisions.md D-043/D-051).
+
+    Never calls a source adapter, never touches the network or the
+    database, and never changes notification_thresholds — this is a
+    read-only calibration report over relevance scores, not a calibrated
+    confidence estimate."""
+    try:
+        candidate = load_candidate_profile(candidate_profile, data_dir=data_dir)
+        search_profiles_map = load_search_profiles(search_profiles, data_dir=data_dir)
+        search = get_search_profile(search_profiles_map, profile, file=search_profiles)
+        weights = load_scoring_weights(scoring_weights_path, data_dir=data_dir)
+    except ConfigError as exc:
+        typer.echo(f"Configuration error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    try:
+        fixtures = load_evaluation_dataset(dataset)
+    except EvaluationDatasetError as exc:
+        typer.echo(f"Evaluation dataset error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    report = run_evaluation(fixtures, candidate, search, weights)
+
+    if json_output:
+        typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
+    else:
+        typer.echo(_format_evaluation_human(report, profile=profile, dataset=dataset))
 
 
 if __name__ == "__main__":

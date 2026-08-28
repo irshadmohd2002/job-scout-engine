@@ -1,0 +1,26 @@
+# Milestone 2 Deliverable 5 step 11 evaluation fixture (decisions.md D-043).
+# Generic, illustrative candidate profile representing a materially
+# different profession (software engineering) from the strategy/
+# chief-of-staff group in ../strategy_chief_of_staff/ -- proves the
+# profession-agnostic matching engine against different vocabulary
+# (CLAUDE.md hard constraint 10). No real employer, school, or biographical
+# detail (CLAUDE.md hard constraint 8).
+candidate_id: software-engineering-candidate
+years_experience: 7.0
+current_location: {country: IN, region: null, city: null}
+nationality: IN
+seniority: "Senior Software Engineer"
+seniority_level: null
+education:
+  - {level: undergraduate, degree: "BSc Computer Science", field: "Computer Science",
+     institution: null}
+role_families: ["software engineering", "backend development"]
+title_aliases: ["Senior Software Engineer", "Backend Engineer"]
+primary_skills: ["python", "distributed systems", "api design"]
+secondary_skills: ["kubernetes"]
+transferable_skills: ["technical mentoring"]
+industries: ["technology"]
+sectors: ["private sector"]
+requires_work_authorisation_support: true
+open_to_relocation: true
+notification_thresholds: {priority_score: 85, digest_score: 70}

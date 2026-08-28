@@ -1,0 +1,23 @@
+# Milestone 2 Deliverable 5 step 11 evaluation fixture (decisions.md D-043).
+# Paired with candidate_profile.yaml in this directory. Generic/illustrative
+# only — no real employer or personal data (CLAUDE.md hard constraint 8).
+profiles:
+  - profile_id: strategy_chief_of_staff_eval
+    candidate_profile_ref: strategy-chief-of-staff-candidate
+    description: "Milestone 2 evaluation fixture: strategy/chief-of-staff role family."
+    included_countries: [GB, DE, NL]
+    target_titles: ["Chief of Staff"]
+    title_aliases: ["Head of Strategy"]
+    role_families: ["strategy and planning", "chief of staff"]
+    required_skills: ["strategic planning", "stakeholder management", "program management"]
+    preferred_skills: ["financial modelling"]
+    transferable_skills: ["cross-functional leadership"]
+    included_industries: ["professional services"]
+    included_sectors: ["private sector"]
+    employment_types: [full_time]
+    min_experience_years: 6
+    max_experience_years: 15
+    security_clearance_allowed: false
+    reject_on_explicit_no_sponsorship: true
+    notification_thresholds: {priority_score: 85, digest_score: 70}
+    polling_frequency_minutes: 720

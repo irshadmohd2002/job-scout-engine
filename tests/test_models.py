@@ -10,7 +10,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from job_scout.models import CompanyWatchlistEntry, SourceCapabilities
+from job_scout.models import (
+    CompanyWatchlistEntry,
+    EvaluationJobFixture,
+    EvaluationLabel,
+    Location,
+    SourceCapabilities,
+)
 from tests.factories import make_source_entry
 
 
@@ -179,3 +185,78 @@ def test_company_watchlist_entry_round_trip_via_dump_and_validate() -> None:
     )
     restored = CompanyWatchlistEntry.model_validate(entry.model_dump())
     assert restored == entry
+
+
+# --- EvaluationLabel / EvaluationJobFixture (Milestone 2 Deliverable 5 -----
+# step 11; decisions.md D-043) --------------------------------------------
+# Model validation only: dataset-loading and metric-computation tests live
+# in tests/test_evaluation.py.
+
+
+def test_evaluation_label_has_exactly_five_values() -> None:
+    assert {member.value for member in EvaluationLabel} == {
+        "strong_match",
+        "adjacent_match",
+        "weak_match",
+        "hard_filter_reject",
+        "deceptive_false_positive",
+    }
+
+
+def test_evaluation_job_fixture_parses_minimal_fields() -> None:
+    fixture = EvaluationJobFixture(
+        job_id="fixture-1",
+        title="Example Title",
+        description="Example description text.",
+        company="Example Employer",
+        location=Location(country="GB", city="London"),
+        label=EvaluationLabel.STRONG_MATCH,
+        rationale="Exact title/skill match.",
+    )
+    assert fixture.employment_type is None
+    assert fixture.posted_at is None
+    assert fixture.label is EvaluationLabel.STRONG_MATCH
+
+
+def test_evaluation_job_fixture_missing_rationale_fails() -> None:
+    with pytest.raises(ValidationError):
+        EvaluationJobFixture.model_validate(
+            {
+                "job_id": "fixture-1",
+                "title": "Example Title",
+                "description": "Example description text.",
+                "company": "Example Employer",
+                "location": {"country": "GB"},
+                "label": "strong_match",
+            }
+        )
+
+
+def test_evaluation_job_fixture_rejects_invalid_label() -> None:
+    with pytest.raises(ValidationError):
+        EvaluationJobFixture.model_validate(
+            {
+                "job_id": "fixture-1",
+                "title": "Example Title",
+                "description": "Example description text.",
+                "company": "Example Employer",
+                "location": {"country": "GB"},
+                "label": "not_a_real_label",
+                "rationale": "n/a",
+            }
+        )
+
+
+def test_evaluation_job_fixture_round_trip_via_dump_and_validate() -> None:
+    fixture = EvaluationJobFixture(
+        job_id="fixture-1",
+        title="Example Title",
+        description="Example description text.",
+        company="Example Employer",
+        location=Location(country="GB", city="London"),
+        employment_type="full_time",
+        label=EvaluationLabel.DECEPTIVE_FALSE_POSITIVE,
+        rationale="Shallow keyword overlap only.",
+    )
+    restored = EvaluationJobFixture.model_validate(fixture.model_dump())
+    assert restored == fixture

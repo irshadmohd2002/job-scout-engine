@@ -1646,3 +1646,96 @@ design"):
   `register_name`, `confidence`) — new models; `VisaAssessment`/`VisaStatus`
   themselves are unchanged (§2.12's M2 update above documents the new
   *values* they're constructed with, not a schema change).
+
+## 22. Milestone 2 Deliverable 5 step 11: evaluation tooling (implemented)
+
+A repeatable, offline score-calibration tool (decisions.md D-043/D-051;
+MILESTONE_2.md "Evaluation dataset and calibration design") — no pipeline,
+network, or persistence involvement, and no change to
+`notification_thresholds` or any Stage 5 scoring formula.
+
+- **New module `evaluation.py`**: `run_evaluation(dataset:
+  list[EvaluationJobFixture], candidate: CandidateProfile, search:
+  SearchProfile, weights: ScoringWeights) -> EvaluationReport` is a pure
+  function over the existing Stage 1/2/5 callers
+  (`matching.hard_filters.evaluate_hard_filters`,
+  `matching.prefilter.run_prefilter`, `matching.scoring.build_match_result`)
+  — the same three calls `pipeline.py::run_once` already makes, applied to a
+  synthetic `Job` per fixture instead of a fetched one. `load_evaluation_dataset(path)
+  -> list[EvaluationJobFixture]` is the one I/O boundary (a YAML file,
+  `{fixtures: [...]}`), kept separate so `run_evaluation` itself stays a pure
+  function; raises `EvaluationDatasetError` (same shape as `config.py`'s
+  `ConfigError`) on a missing/malformed/empty/duplicate-`job_id` dataset
+  file.
+- **Fixture-to-`Job` construction**: `evaluation.py::_fixture_to_job` builds
+  the canonical `Job` model (D-040) an `EvaluationJobFixture` represents by
+  reusing `deduplication.normalize_title`/`normalize_company`/
+  `compute_fingerprint` — the exact same normalisation helpers every real
+  adapter's normalizer already uses — rather than a second, parallel
+  normalized representation. `Job.collected_at` falls back to a fixed
+  constant (`2026-01-01T00:00:00Z`) when a fixture supplies no `posted_at`,
+  so report output is reproducible from one run to the next.
+- **`EvaluationReport`/`EvaluationFixtureResult`** (defined in
+  `evaluation.py`, not `models.py` — decisions.md D-051 point 3):
+  `EvaluationFixtureResult(job_id, label, rationale, hard_filter_passed,
+  final_score, notification_tier)` is the per-fixture evidence trail
+  (CLAUDE.md hard constraint 5); `EvaluationReport(dataset_size,
+  label_counts, precision_at_5, precision_at_10, precision_at_20,
+  recall_of_strong_matches, false_positive_rate, hard_filter_correctness,
+  ranking_inversions, ranking_inversion_pairs, tier_distribution,
+  fixture_results)` is `run_evaluation`'s return value and
+  `job-scout evaluate --json`'s payload verbatim (`.model_dump(mode="json")`).
+- **Ranking treatment of `final_score is None`** (decisions.md D-051 point
+  2): a fixture rejected at Stage 1 or filtered at Stage 2 never receives an
+  invented score — `_effective_score`/`_rank_sort_key` sort it strictly
+  below every real `[0, 100]` `final_score` (a `-1.0` sentinel used only for
+  ranking, never stored back onto the result) for precision@k and the
+  ranking-inversions metric. Every other metric reads `notification_tier`/
+  `hard_filter_result.passed` directly, which `build_match_result` already
+  sets correctly for a `None`-score job with no special-casing needed here.
+- **Metrics** (MILESTONE_2.md "Evaluation dataset and calibration design",
+  decisions.md D-043): precision@5/@10/@20 (fraction of the top-`min(k, n)`
+  ranked fixtures labelled `strong_match`/`adjacent_match`), recall of
+  labelled strong matches (fraction of `strong_match` fixtures whose
+  `notification_tier` is `priority`/`digest`; vacuously `1.0` when a dataset
+  has none), false-positive rate (fraction of `deceptive_false_positive`
+  fixtures landing `priority`/`digest`; vacuously `0.0` when a dataset has
+  none), hard-filter correctness (fraction of `hard_filter_reject` fixtures
+  where `HardFilterResult.passed is False`; vacuously `1.0` when a dataset
+  has none), ranking inversions (count + the actual `(higher_label_job_id,
+  lower_label_job_id)` pairs, using the label order `strong_match(0) <
+  adjacent_match(1) < weak_match(2) < {hard_filter_reject,
+  deceptive_false_positive}(3)` from D-043), and threshold-tier distribution
+  (`label -> notification_tier -> count`). Every value is described as a
+  **relevance score**, never a probability or confidence percentage — this
+  wording rule applies to `job-scout evaluate`'s own printed output too, not
+  only source code comments.
+- **CLI**: `job-scout evaluate --profile <search-profile-id> --dataset
+  <path> [--candidate-profile <path>] [--search-profiles <path>]
+  [--scoring-weights <path>] [--data-dir <path>] [--json]` (decisions.md
+  D-051 point 1) — reuses `plan`/`run-once`'s existing flag convention
+  exactly (`--profile` is the search-profile id; `--candidate-profile`/
+  `--search-profiles` are AppPaths-resolved-default file paths), not
+  MILESTONE_2.md's earlier-drafted, differently-shaped `--search-profile
+  <id>` wording. Never calls a source adapter, never touches the network or
+  the database (no `SqliteJobRepository` import in `evaluation.py` or the
+  CLI command's own code path) — a read-only calibration report.
+- **`models.py`**: `EvaluationLabel` (`StrEnum`: `strong_match |
+  adjacent_match | weak_match | hard_filter_reject |
+  deceptive_false_positive`) and `EvaluationJobFixture(job_id, title,
+  description, company, location: Location, employment_type, posted_at,
+  label, rationale)` — new models, used only by `evaluation.py`/
+  `job-scout evaluate`, never by the core matching pipeline.
+- **Fixture dataset** (`tests/fixtures/evaluation/`, decisions.md D-051):
+  two self-contained groups, each its own generic `candidate_profile.yaml` +
+  `search_profiles.yaml` + `dataset.yaml` (15 fixtures, 3 per
+  `EvaluationLabel`) — `strategy_chief_of_staff/` (the shipped example
+  profile's own role family, CLAUDE.md/decisions.md D-017) and
+  `software_engineering/` (a materially different profession, proving no
+  profession-specific code path per CLAUDE.md hard constraint 10). No real
+  employer, school, or biographical data in either (hard constraint 8).
+  Each dataset includes a deliberately-inserted ranking-inversion pair (one
+  `deceptive_false_positive` fixture engineered to clear the Stage 2
+  pre-filter while several `weak_match` fixtures in the same dataset do
+  not), documented in that fixture's own `rationale`, so the
+  ranking-inversions metric has a real pair to detect in normal test runs.

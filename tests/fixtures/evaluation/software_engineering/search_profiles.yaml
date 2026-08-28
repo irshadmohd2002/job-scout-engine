@@ -1,0 +1,23 @@
+# Milestone 2 Deliverable 5 step 11 evaluation fixture (decisions.md D-043).
+# Paired with candidate_profile.yaml in this directory. Generic/illustrative
+# only -- no real employer or personal data (CLAUDE.md hard constraint 8).
+profiles:
+  - profile_id: software_engineering_eval
+    candidate_profile_ref: software-engineering-candidate
+    description: "Milestone 2 evaluation fixture: software engineering role family."
+    included_countries: [GB, DE, NL]
+    target_titles: ["Senior Software Engineer"]
+    title_aliases: ["Backend Engineer"]
+    role_families: ["software engineering", "backend development"]
+    required_skills: ["python", "distributed systems", "api design"]
+    preferred_skills: ["kubernetes"]
+    transferable_skills: ["technical mentoring"]
+    included_industries: ["technology"]
+    included_sectors: ["private sector"]
+    employment_types: [full_time]
+    min_experience_years: 4
+    max_experience_years: 12
+    security_clearance_allowed: false
+    reject_on_explicit_no_sponsorship: true
+    notification_thresholds: {priority_score: 85, digest_score: 70}
+    polling_frequency_minutes: 720

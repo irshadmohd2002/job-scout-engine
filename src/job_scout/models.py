@@ -687,3 +687,39 @@ class SponsorRegistryMatch(BaseModel):
     registered_name: str | None = None
     register_name: str | None = None
     confidence: float
+
+
+# --- Evaluation dataset (Milestone 2 Deliverable 5 step 11) -----------------
+# Used only by evaluation.py / `job-scout evaluate` (decisions.md D-043) — a
+# labelled fixture dataset for offline score calibration, never consumed by
+# the core matching pipeline. Five labels, not four: `hard_filter_reject`
+# renames the earlier "reject" for clarity, and `deceptive_false_positive` is
+# new — a fixture that shares surface vocabulary with a configured
+# title/skill but is not the same role family on human review (the class of
+# near-miss D-029/D-032 through D-034 found only by hand in live runs).
+
+
+class EvaluationLabel(StrEnum):
+    STRONG_MATCH = "strong_match"
+    ADJACENT_MATCH = "adjacent_match"
+    WEAK_MATCH = "weak_match"
+    HARD_FILTER_REJECT = "hard_filter_reject"
+    DECEPTIVE_FALSE_POSITIVE = "deceptive_false_positive"
+
+
+class EvaluationJobFixture(BaseModel):
+    """One hand-labelled job posting in an evaluation dataset
+    (`tests/fixtures/evaluation/`). `rationale` is where a labeller explains
+    *why* the label applies — mandatory documentation for a
+    `deceptive_false_positive` fixture in particular (decisions.md D-043),
+    but required for every label so the dataset stays maintainable."""
+
+    job_id: str
+    title: str
+    description: str
+    company: str
+    location: Location
+    employment_type: str | None = None
+    posted_at: datetime | None = None
+    label: EvaluationLabel
+    rationale: str

@@ -1,0 +1,24 @@
+# Milestone 2 Deliverable 5 step 11 evaluation fixture (decisions.md D-043).
+# Generic, illustrative candidate profile representing the strategy /
+# transformation / chief-of-staff / program-management role family — the
+# example profile family CLAUDE.md/decisions.md D-017 already treats as one
+# configuration of the engine, not the engine's scope. No real employer,
+# school, or biographical detail (CLAUDE.md hard constraint 8).
+candidate_id: strategy-chief-of-staff-candidate
+years_experience: 10.0
+current_location: {country: IN, region: null, city: null}
+nationality: IN
+seniority: "Director"
+seniority_level: null
+education:
+  - {level: postgraduate, degree: MBA, field: "General Management", institution: null}
+role_families: ["strategy and planning", "chief of staff"]
+title_aliases: ["Chief of Staff", "Head of Strategy"]
+primary_skills: ["strategic planning", "stakeholder management", "program management"]
+secondary_skills: ["financial modelling"]
+transferable_skills: ["cross-functional leadership"]
+industries: ["professional services"]
+sectors: ["private sector"]
+requires_work_authorisation_support: true
+open_to_relocation: true
+notification_thresholds: {priority_score: 85, digest_score: 70}

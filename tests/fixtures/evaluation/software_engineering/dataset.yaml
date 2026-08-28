@@ -1,0 +1,270 @@
+# Milestone 2 Deliverable 5 step 11 labelled evaluation dataset
+# (decisions.md D-043; MILESTONE_2.md "Evaluation dataset and calibration
+# design"). Paired with candidate_profile.yaml/search_profiles.yaml in this
+# directory -- a materially different profession (software engineering)
+# from ../strategy_chief_of_staff/, proving the engine has no
+# profession-specific code path (CLAUDE.md hard constraint 10). Generic
+# job-posting text only, no real employer or personal data. Deterministic,
+# local, offline fixture data -- never fetched from a live source.
+fixtures:
+  - job_id: b-strong-1
+    title: "Senior Software Engineer"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: strong_match
+    description: >
+      Senior Software Engineer role, 4-12 years experience. Backend
+      development using Python and distributed systems, with strong api
+      design skills. Kubernetes experience valued, along with technical
+      mentoring of junior engineers. Technology sector, private sector
+      employer. BSc Computer Science preferred. Visa sponsorship available
+      for the right candidate.
+    rationale: >
+      Exact match on the search profile's target_titles ("Senior Software
+      Engineer"), with all required and preferred skills, sector,
+      seniority/experience range, education and positive visa-sponsorship
+      evidence present. An unambiguous strong match.
+
+  - job_id: b-strong-2
+    title: "Senior Software Engineer"
+    company: "Example Tech Co"
+    location: {country: DE, city: Berlin}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: strong_match
+    description: >
+      Senior Software Engineer, 4-12 years experience required. Python and
+      distributed systems backend work, strong api design. Kubernetes and
+      technical mentoring valued. Technology sector, private sector. BSc
+      Computer Science preferred. Relocation assistance provided.
+    rationale: >
+      Same exact-title-match strength as b-strong-1, in a second included
+      country (DE) and with relocation-assistance visa evidence instead of
+      explicit sponsorship wording.
+
+  - job_id: b-strong-3
+    title: "Backend Engineer"
+    company: "Example Tech Co"
+    location: {country: NL, city: Amsterdam}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: strong_match
+    description: >
+      Backend Engineer, 4-12 years experience. Python, distributed systems
+      and api design are core to the role. Kubernetes and technical
+      mentoring expected. Technology sector, private sector employer. BSc
+      Computer Science preferred. We will sponsor a work permit.
+    rationale: >
+      Exact match on a configured title_alias ("Backend Engineer") rather
+      than the primary target_title, in a third included country (NL) --
+      confirms an alias match scores strongly once every other signal is
+      also present (the description omits the exact "Senior Software
+      Engineer" seniority phrase, so this fixture lands a little below
+      b-strong-1/2 while still ranking clearly above every adjacent/weak
+      fixture below).
+
+  - job_id: b-adjacent-1
+    title: "Backend Development Lead"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Backend development role, 4-12 years experience (target range).
+      Focus on distributed systems and api design, some Python. Kubernetes
+      and technical mentoring valued. Technology sector, private sector.
+      BSc Computer Science is a plus.
+    rationale: >
+      Matches the active role family ("backend development") and most
+      required/preferred skills, sector and education, but the title itself
+      is neither a configured target_title nor title_alias -- a genuinely
+      related role, not an exact title match.
+
+  - job_id: b-adjacent-2
+    title: "Software Engineering Team Lead"
+    company: "Example Tech Co"
+    location: {country: DE, city: Munich}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Leads a software engineering team, 4-12 years experience. Distributed
+      systems and api design responsibilities, with some technical
+      mentoring. Technology sector.
+    rationale: >
+      Role-family-only match ("software engineering") with fewer skill
+      terms covered than b-adjacent-1 -- still a real, related role, but a
+      thinner adjacent match.
+
+  - job_id: b-adjacent-3
+    title: "Backend Development Engineer"
+    company: "Example Tech Co"
+    location: {country: NL, city: Rotterdam}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Backend development role, 4-12 years experience. Python and api
+      design work. Kubernetes valued. Private sector, technology employer.
+    rationale: >
+      Third variant of the same role-family-only match pattern as
+      b-adjacent-1/2 -- confirms the engine treats this class of near-title
+      match consistently across postings.
+
+  - job_id: b-weak-1
+    title: "IT Support Analyst"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Provides desktop support and troubleshooting for internal staff. Some
+      exposure to scripting. 4-12 years experience preferred.
+    rationale: >
+      A real but very thin overlap (general "scripting" exposure only) with
+      no title/role-family/required-skill match and no sector/education/
+      visa evidence -- correctly too weak to clear the Stage 2 pre-filter.
+
+  - job_id: b-weak-2
+    title: "Graduate Software Tester"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Graduate scheme role running manual test scripts and logging defects.
+      Entry level. Some exposure to Python for test automation.
+    rationale: >
+      A genuinely junior, entry-level role (well below the search profile's
+      4-year minimum) with only a passing Python mention -- weak, not
+      deceptive, since the posting is honest about the seniority mismatch.
+
+  - job_id: b-weak-3
+    title: "Technical Documentation Assistant"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Maintains internal technical documentation and API reference pages.
+      Occasional api design review notes. 4-12 years experience preferred.
+    rationale: >
+      Adjacent-sounding function (API documentation) with almost no overlap
+      against the candidate's actual required engineering skills -- a real
+      but weak signal.
+
+  - job_id: b-reject-1
+    title: "Senior Software Engineer"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: hard_filter_reject
+    description: >
+      Senior Software Engineer role. Open to UK nationals only due to
+      government contract security requirements. 4-12 years experience.
+    rationale: >
+      Explicit citizenship restriction ("UK nationals only") must trigger
+      Stage 1's citizenship_restriction hard filter regardless of an
+      otherwise exact title match.
+
+  - job_id: b-reject-2
+    title: "Senior Software Engineer"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: hard_filter_reject
+    description: >
+      Senior Software Engineer role. Applicants must hold an active
+      security clearance before starting. 4-12 years experience, Python and
+      distributed systems.
+    rationale: >
+      Security-clearance requirement against a search profile that does not
+      allow security-cleared roles must trigger Stage 1's
+      security_clearance_required rule -- an independent hard-filter rule
+      from b-reject-1's citizenship check.
+
+  - job_id: b-reject-3
+    title: "Backend Engineer"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: hard_filter_reject
+    description: >
+      Backend Engineer role. Applicants must already have the right to work
+      in the country; no visa sponsorship route is available for this
+      position. 4-12 years experience.
+    rationale: >
+      The candidate requires work-authorisation support; explicit "must
+      already have the right to work" wording must trigger Stage 1's
+      existing_work_authorisation_required rule -- a third, independent
+      hard-filter rule.
+
+  - job_id: b-deceptive-1
+    title: "Sales Engineer"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Pre-sales technical role demonstrating products to prospective
+      customers and supporting the sales team with technical questions.
+      Some Python scripting for demos. Customer-facing, not a development
+      role.
+    rationale: >
+      Shares the word "Engineer" and a passing Python mention, but is a
+      pre-sales/customer-facing role, not the backend software-engineering
+      role family the candidate targets -- the classic Software Engineer
+      vs. Sales Engineer near-miss (MILESTONE_2.md D-043 pattern list).
+
+  - job_id: b-deceptive-2
+    title: "Program Management Analyst II"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Coordinates cross-team programs using distributed systems terminology
+      in reporting dashboards, loosely modelled on software engineering
+      delivery methodologies. Supports api design reviews administratively
+      and tracks Python-based automation tickets without writing code.
+      Technology sector, private sector employer.
+    rationale: >
+      Deliberately keyword-dense (distributed systems, api design, Python,
+      software engineering, technology, private sector) despite being an
+      administrative program-coordination role that never actually performs
+      engineering work -- included specifically to give the
+      ranking-inversions metric a real pair to detect: this fixture clears
+      the Stage 2 pre-filter and reaches a real (if low) Stage 5 score,
+      while the weak_match fixtures above do not reach Stage 5 at all, so a
+      correctly functioning detector must flag that a
+      deceptive_false_positive fixture outranks several weak_match
+      fixtures.
+
+  - job_id: b-deceptive-3
+    title: "Technical Recruiter"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Sources and screens candidates for backend development and software
+      engineering openings, reviewing Python and api design portfolios.
+      Does not write production code. Technology sector employer.
+    rationale: >
+      Mentions the exact configured role families and skills only in the
+      context of recruiting for other people's engineering roles, not
+      performing engineering work itself -- a recruiting/HR role dressed in
+      engineering vocabulary, correctly too thin to clear the Stage 2
+      pre-filter.

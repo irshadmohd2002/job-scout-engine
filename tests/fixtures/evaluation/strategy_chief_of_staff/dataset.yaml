@@ -1,0 +1,285 @@
+# Milestone 2 Deliverable 5 step 11 labelled evaluation dataset
+# (decisions.md D-043; MILESTONE_2.md "Evaluation dataset and calibration
+# design"). Paired with candidate_profile.yaml/search_profiles.yaml in this
+# directory — the strategy/transformation/chief-of-staff/program-management
+# role family (CLAUDE.md/decisions.md D-017's "example profile", not the
+# engine's scope). Generic job-posting text only, no real employer or
+# personal data (CLAUDE.md hard constraint 8). Deterministic, local, offline
+# fixture data — never fetched from a live source.
+fixtures:
+  - job_id: a-strong-1
+    title: "Chief of Staff"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: strong_match
+    description: >
+      Chief of Staff role reporting to the CEO. Director-level position,
+      6-15 years experience. Responsibilities include strategic planning,
+      stakeholder management, and program management across the
+      organisation. Financial modelling experience is a plus, along with
+      strong cross-functional leadership. Professional services background
+      preferred, private sector. MBA preferred. Visa sponsorship available
+      for the right candidate.
+    rationale: >
+      Exact match on the search profile's target_titles ("Chief of Staff"),
+      with all required and preferred skills, sector, seniority/experience
+      range, education and positive visa-sponsorship evidence present. An
+      unambiguous strong match a human reviewer would rank at the top.
+
+  - job_id: a-strong-2
+    title: "Chief of Staff"
+    company: "Example Employer"
+    location: {country: DE, city: Berlin}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: strong_match
+    description: >
+      Chief of Staff to the Managing Director. Director-level, 6-15 years
+      experience required. Owns strategic planning, stakeholder management
+      and program management for the leadership team. Financial modelling
+      and cross-functional leadership valued. Professional services,
+      private sector employer. MBA preferred. Relocation assistance
+      provided.
+    rationale: >
+      Same exact-title-match strength as a-strong-1, in a second included
+      country (DE) and with relocation-assistance visa evidence instead of
+      explicit sponsorship wording -- exercises the engine on a second,
+      equally strong posting rather than a single hand-tuned example.
+
+  - job_id: a-strong-3
+    title: "Head of Strategy"
+    company: "Example Employer"
+    location: {country: NL, city: Amsterdam}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: strong_match
+    description: >
+      Head of Strategy, Director-level, 6-15 years experience. Leads
+      strategic planning, stakeholder management and program management.
+      Financial modelling and cross-functional leadership expected.
+      Professional services background, private sector. MBA preferred. We
+      will sponsor a work permit for the right candidate.
+    rationale: >
+      Exact match on a configured title_alias ("Head of Strategy") rather
+      than the primary target_title, in a third included country (NL) --
+      confirms an alias match scores as strongly as a target_title match
+      once every other signal is also present.
+
+  - job_id: a-adjacent-1
+    title: "Strategy and Planning Director"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Director-level strategy and planning role, 6-15 years experience
+      required (target range). Focus on strategic planning and program
+      management, with some stakeholder management. Financial modelling and
+      cross-functional leadership are valued. Professional services
+      background in the private sector. MBA is a plus.
+    rationale: >
+      Matches the active role family ("strategy and planning") and most
+      required/preferred skills, sector, seniority and education, but the
+      title itself is neither a configured target_title nor title_alias --
+      a genuinely related role a human would still shortlist, just not an
+      exact title match.
+
+  - job_id: a-adjacent-2
+    title: "Chief of Staff Office Lead"
+    company: "Example Employer"
+    location: {country: DE, city: Munich}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Leads the chief of staff office function, 6-15 years experience.
+      Strategic planning and program management responsibilities, with some
+      cross-functional leadership. Professional services background. MBA is
+      a plus.
+    rationale: >
+      "Chief of staff office" is a real, closely related function but the
+      job title itself never exactly matches a configured target_title or
+      title_alias, and fewer skills are covered than the strong-match
+      fixtures -- adjacent, not strong.
+
+  - job_id: a-adjacent-3
+    title: "Director, Strategy and Planning"
+    company: "Example Employer"
+    location: {country: NL, city: Rotterdam}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Director, strategy and planning function, 6-15 years experience.
+      Stakeholder management and program management are core
+      responsibilities. Financial modelling valued. Private sector,
+      professional services.
+    rationale: >
+      Third variant of the same role-family-only match pattern as
+      a-adjacent-1/2 -- included to confirm the engine treats this class of
+      near-title-match consistently across postings, not as a one-off.
+
+  - job_id: a-weak-1
+    title: "Business Operations Coordinator"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Supports the operations team with reporting and coordination tasks.
+      Some exposure to program management. 6-15 years experience preferred.
+    rationale: >
+      A real but thin overlap (one shared skill term, "program management")
+      with no title/role-family match and no sector/education/visa
+      evidence -- correctly too weak to clear the Stage 2 pre-filter, unlike
+      the adjacent-match fixtures above.
+
+  - job_id: a-weak-2
+    title: "Junior Strategy Coordinator"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Graduate programme role supporting the strategy team with
+      note-taking, scheduling, and basic stakeholder management follow-ups.
+      Entry level. Some program management exposure.
+    rationale: >
+      A genuinely junior, entry-level role (well below the search profile's
+      6-year minimum) with only administrative-support duties -- weak, not
+      deceptive, since the title and description are honest about the
+      seniority mismatch rather than dressing up an unrelated role.
+
+  - job_id: a-weak-3
+    title: "Transformation Support Officer"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Provides administrative support to the transformation team, including
+      document management and meeting coordination. Occasional stakeholder
+      management follow-up tasks. 6-15 years experience preferred.
+    rationale: >
+      Genuinely adjacent department (transformation) but an administrative
+      support function with almost no overlap against the candidate's
+      actual required skills -- a real but weak signal.
+
+  - job_id: a-reject-1
+    title: "Chief of Staff"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: hard_filter_reject
+    description: >
+      Chief of Staff role. This role is open to UK citizens only due to
+      government contract security requirements. 6-15 years experience.
+    rationale: >
+      Explicit citizenship restriction ("UK citizens only") must trigger
+      Stage 1's citizenship_restriction hard filter regardless of an
+      otherwise exact title match -- proves the hard filter isn't shadowed
+      by a strong title signal.
+
+  - job_id: a-reject-2
+    title: "Chief of Staff"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: hard_filter_reject
+    description: >
+      Chief of Staff role supporting the executive team. Applicants must
+      hold an active security clearance before starting. 6-15 years
+      experience, strategic planning and stakeholder management.
+    rationale: >
+      Security-clearance requirement against a search profile that does not
+      allow security-cleared roles (security_clearance_allowed: false) must
+      trigger Stage 1's security_clearance_required rule -- a second,
+      independent hard-filter rule from a-reject-1's citizenship check.
+
+  - job_id: a-reject-3
+    title: "Head of Strategy"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: hard_filter_reject
+    description: >
+      Head of Strategy role. Applicants must already have the right to work
+      in the country; no visa sponsorship route is available for this
+      position. 6-15 years experience.
+    rationale: >
+      The candidate requires work-authorisation support
+      (requires_work_authorisation_support: true); explicit "must already
+      have the right to work" wording must trigger Stage 1's
+      existing_work_authorisation_required rule -- a third, independent
+      hard-filter rule.
+
+  - job_id: a-deceptive-1
+    title: "Strategy Analyst"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Junior analyst role supporting the strategy and planning team with
+      data entry and scheduling. Entry level, graduate programme. Program
+      management exposure limited to note-taking in meetings.
+    rationale: >
+      Shares the "strategy and planning" role-family wording and the phrase
+      "program management" superficially, but is a junior/entry-level
+      administrative-support role, not the chief-of-staff/strategy-
+      leadership role family the candidate targets -- a human reviewer
+      would reject this despite the keyword overlap (Strategy Analyst vs.
+      Investment Analyst pattern, MILESTONE_2.md D-043).
+
+  - job_id: a-deceptive-2
+    title: "Investment Strategy Analyst"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Analyses investment portfolios and produces performance reporting for
+      the investment committee, loosely referencing corporate strategic
+      planning frameworks and stakeholder management terminology in its
+      reporting templates. Professional services employer, private sector.
+      No program leadership or chief-of-staff responsibilities.
+    rationale: >
+      Deliberately keyword-dense (strategic planning, stakeholder
+      management, professional services, private sector) despite being an
+      investment-analysis role with no program-leadership remit -- the
+      classic Strategy Analyst vs. Investment Analyst near-miss
+      (MILESTONE_2.md D-043 pattern list), included specifically to give
+      the ranking-inversions metric a real pair to detect: this fixture
+      clears the Stage 2 pre-filter and reaches a real (if low)
+      Stage 5 score, while the weak_match fixtures above do not reach
+      Stage 5 at all, so a correctly functioning detector must flag that a
+      deceptive_false_positive fixture outranks several weak_match
+      fixtures.
+
+  - job_id: a-deceptive-3
+    title: "Strategy Communications Assistant"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Formats slide decks and drafts internal newsletters referencing the
+      strategy and planning agenda. Entry level, graduate scheme. No
+      stakeholder-facing or program management responsibilities.
+    rationale: >
+      Mentions "strategy and planning" only as the subject of internal
+      communications material, not as the role's actual function -- a
+      communications/admin role dressed in strategy vocabulary, correctly
+      too thin to even clear the Stage 2 pre-filter.

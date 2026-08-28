@@ -2206,3 +2206,103 @@ normaliser rather than inventing a second one" discipline as D-040 for
 `normalize_company`; same "evidence precedence, never blended" discipline
 CLAUDE.md hard constraint 4/5 already requires for every visa/match
 conclusion in this codebase.
+
+### D-051: Evaluation tooling (Milestone 2 Deliverable 5 step 11) —
+`--profile`/`--candidate-profile`/`--search-profiles` reused rather than
+MILESTONE_2.md's earlier-drafted `--search-profile <id>` wording; a
+`final_score is None` fixture ranks below every scored fixture, never
+invents a score; `EvaluationReport` lives in `evaluation.py`, not
+`models.py`
+**Decision**: Three implementation questions MILESTONE_2.md's CLI/domain-model
+prose left ambiguous (the document predates any M2 code, per its own status
+line) are resolved as follows:
+1. **CLI flags reuse `plan`/`run-once`'s existing convention exactly**:
+   `job-scout evaluate --profile <search-profile-id> --dataset <path>
+   [--candidate-profile <path>] [--search-profiles <path>]
+   [--scoring-weights <path>] [--data-dir <path>] [--json]` — `--profile`
+   is the search-profile *id* (looked up via `get_search_profile`, same as
+   `plan`/`run-once`), `--candidate-profile`/`--search-profiles` are file
+   *paths* with the same AppPaths-resolved-default behaviour every other
+   command already uses. This is **not** MILESTONE_2.md's literal
+   originally-drafted `--candidate-profile <ref> --search-profile <id>`
+   wording (singular `--search-profile` naming a *profile id*), which would
+   have introduced a second, inconsistent flag-naming convention alongside
+   the one `plan`/`run-once` already established (`--search-profiles` as a
+   *path*, `--profile` as the *id*) — `--search-profile <id>` and
+   `--search-profiles <path>` differing only by a trailing "s" is exactly
+   the kind of near-miss this project's own scoring-calibration history
+   (D-029/D-032–034) warns against inventing a second time, this time in
+   the CLI surface instead of the matching engine. `--dataset <path>` is
+   the one genuinely new flag, since no existing command has an evaluation
+   dataset to load.
+2. **A fixture whose `MatchResult.final_score` is `None` (Stage 1
+   hard-filter-rejected, or Stage 2 pre-filter-rejected) is never assigned
+   an invented numeric score for ranking purposes.** `evaluation.py`'s
+   `_effective_score`/`_rank_sort_key` treat `None` as sorting strictly
+   below every real `[0, 100]` `final_score` (via a `-1.0` sentinel, never
+   stored back onto the fixture result itself) for both precision@k ranking
+   and the ranking-inversions metric. Every other metric
+   (`recall_of_strong_matches`, `false_positive_rate`,
+   `hard_filter_correctness`, `tier_distribution`) is computed from
+   `notification_tier`/`hard_filter_result.passed` directly, which
+   `build_match_result` already sets correctly (`REJECTED`/`STORE_ONLY`)
+   for a `None`-score job without any special-casing needed in
+   `evaluation.py`. This mirrors exactly how a real `run-once` pipeline
+   already treats such a job — never surfaced above `store_only`/`rejected`
+   regardless of any hypothetical score — so the evaluation tool's ranking
+   behaviour matches production behaviour instead of inventing a separate
+   rule for offline calibration.
+3. **`EvaluationReport`/`EvaluationFixtureResult` are defined in
+   `evaluation.py`, not `models.py`.** `MILESTONE_2.md`'s "Architecture
+   changes" section names `EvaluationReport` as `run_evaluation`'s return
+   type but never lists it under "Domain-model changes" (`models.py`) —
+   only `EvaluationLabel`/`EvaluationJobFixture` are listed there, and
+   Deliverable 5 step 11's own file list matches that split exactly
+   (`models.py` for the label/fixture, `evaluation.py` new). This follows
+   the existing precedent of `pipeline.py::RunOnceResult` (an
+   orchestration-function's own return-aggregation type, defined beside
+   `run_once`, not in `models.py`) and `config.py::SponsorRegisterConfig`
+   (a Pydantic `BaseModel` that still lives in its owning module rather
+   than `models.py`) — `models.py` holds cross-module domain models
+   (`Job`, `MatchResult`, `EvaluationJobFixture`, ...), not every
+   function's own output-aggregation shape. `EvaluationReport` is still a
+   Pydantic `BaseModel` (not a plain `@dataclass` like `RunOnceResult`) so
+   `job-scout evaluate --json` can call `.model_dump(mode="json")` directly
+   without hand-building a payload dict, matching `plan`'s existing
+   `--json` handling for its own Pydantic `SearchExecutionPlan` result.
+**Alternatives**: Adopting MILESTONE_2.md's literal `--search-profile <id>`
+flag name verbatim (rejected — reason 1 above: a second, confusable
+profile-flag convention). Treating a `None` `final_score` as `0.0` for
+ranking (rejected — `0.0` is a real, valid Stage 5 raw score a job that
+reached Stage 5 and scored maximally negative on every component could
+still receive, so `0.0` would not reliably sort below every scored fixture;
+`-1.0` is guaranteed to, since Stage 5's own clamp bounds every real
+`final_score` to `[0.0, 100.0]`). Defining `EvaluationReport` in
+`models.py` for uniformity with every other M2 domain-model addition
+(rejected — reason 3 above; would also make `models.py` responsible for a
+type nothing outside `evaluation.py` ever needs to import, the same
+"import just the job models" non-need `architecture.md` section 12 already
+gives as its reason `models.py` doesn't need splitting the other way).
+**Dataset composition**: two self-contained fixture groups under
+`tests/fixtures/evaluation/` (`strategy_chief_of_staff/`,
+`software_engineering/`), each its own generic `candidate_profile.yaml` +
+`search_profiles.yaml` + `dataset.yaml` (15 labelled fixtures, 3 per
+`EvaluationLabel`) — materially different vocabulary per CLAUDE.md hard
+constraint 10, no real personal data per hard constraint 8. Each dataset
+includes a deliberately-inserted ranking-inversion pair (one
+`deceptive_false_positive` fixture engineered to clear the Stage 2
+pre-filter and reach a real, if low, Stage 5 score, while several
+`weak_match` fixtures in the same dataset do not clear Stage 2 at all) so
+the ranking-inversions metric has a real, reproducible pair to detect
+rather than only ever reporting zero — every fixture's `rationale` field
+explains why its label applies, including why the inversion fixtures were
+constructed that way, per D-043.
+**Why**: Consistency with this project's own established CLI/module-layout
+conventions outweighs matching a planning document's literal
+before-any-code-existed wording once implementation reveals a naming
+collision (the same category of correction D-045 already made for
+`SelectedSource.search_queries`); "never invent a score for a job Stage
+1/2 already rejected" keeps the evaluation tool's ranking behaviour
+consistent with what a real `run-once` pipeline actually surfaces to a
+user, rather than adding a second, offline-only ranking rule a future
+maintainer would need to remember exists.
