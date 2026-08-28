@@ -2306,3 +2306,149 @@ collision (the same category of correction D-045 already made for
 consistent with what a real `run-once` pipeline actually surfaces to a
 user, rather than adding a second, offline-only ranking rule a future
 maintainer would need to remember exists.
+
+---
+
+## Milestone 3 — Planning (scope defined, not implemented)
+
+The ADRs below record decisions made while writing `MILESTONE_3.md` and the
+Milestone 3 planning report that preceded it, before any Milestone 3 code
+changed — same discipline the Milestone 2 planning ADRs (D-035 through
+D-044) used. Milestone 2's baseline (624 passed / 1 skipped / 4 deselected,
+`ruff check .`/`mypy --strict src` clean) was confirmed unchanged during
+this planning pass. No application code, configuration, or test file was
+modified — only `MILESTONE_3.md` (new), `ROADMAP.md`, `MILESTONE_2.md`,
+`CLAUDE.md`, and `architecture.md` §12 changed, and only to formalise this
+scope/these decisions and correct already-identified documentation
+staleness (M2's status text and module-layout tree lagging behind its own
+finalize commit).
+
+### D-052: Stage 3 semantic similarity uses a local embedding backend, not
+an API provider; kept behind a narrow, replaceable interface
+**Decision**: Milestone 3's Stage 3 semantic-similarity component computes
+embeddings using a local model (no outbound network call for the embedding
+computation itself), never an API-based embedding provider (e.g.
+Anthropic, OpenAI, Voyage). The embedding computation is isolated behind a
+narrow, single-purpose interface (a small `Protocol` or a single function
+boundary, e.g. `embed(texts: list[str]) -> list[list[float]]`) in its own
+module, so a future milestone could substitute a different backend
+(local or API) without touching `matching/scoring.py`'s consumption of the
+result.
+**Alternatives**: An API-based embedding provider (rejected — introduces a
+new credential/network dependency and a new per-request cost/latency/
+availability surface for a milestone whose own `ROADMAP.md` explicitly
+separates "semantic similarity" from "LLM enrichment" specifically to avoid
+conflating the two; would also front-run M4's optional-`[llm]`-extra
+pattern before M4 has been scoped for embeddings specifically). Leaving
+Stage 3 unimplemented until M4 (rejected — the user has explicitly approved
+D3 as in-scope for M3).
+**Why**: Matches the spirit of CLAUDE.md hard constraint 3 (no mandatory
+external-model dependency baked into the core pipeline) even though that
+constraint is written specifically about the Anthropic model id — a local
+embedding backend keeps `job-scout run-once`/`evaluate` runnable offline,
+with no new credential category, consistent with this project's "local,
+single-user, synchronous" framing repeated at every milestone boundary. The
+replaceable-interface requirement follows `SourceAdapter`/`JobRepository`'s
+own precedent (`architecture.md` §12's "real seams for real, named future
+work") — this is a real, named future need (a later milestone might swap in
+a better/API backend once M4's LLM groundwork exists), not speculative
+abstraction.
+**Open follow-up (not resolved by this ADR)**: the specific local embedding
+library/model and its packaging (a new required dependency vs. a new
+optional extra) is an implementation-time decision, to be verified and
+documented against the library's real behaviour (mirroring D-016's evidence
+bar) when D3 is actually implemented — this ADR fixes the *category* of
+backend (local, not API/LLM), not the specific library.
+
+### D-053: Stage 3's semantic-similarity evidence must name the specific
+matched signal, never a bare similarity score
+**Decision**: `SemanticResult`'s evidence must identify, for a positive
+semantic match, at least the specific configured phrase (a title, title
+alias, role family, or skill from `CandidateProfile`/`SearchProfile`) and
+the specific job-text field/span it was compared against — not only a raw
+cosine-similarity float. The exact evidence shape (fields on
+`SemanticResult`, and how it renders into `ScoreComponent.evidence`
+strings) must be designed and written down (in `MILESTONE_3.md` or an
+implementation-time follow-up ADR) before D3's code is written, not decided
+ad hoc while coding.
+**Alternatives**: Reporting only the similarity score with no
+matched-phrase context (rejected outright — CLAUDE.md hard constraint 5,
+"every match/visa conclusion carries evidence... don't collapse to a bare
+number," applies to Stage 3 exactly as it already applies to every Stage 5
+`ScoreComponent`). Deferring the evidence-design question to implementation
+time with no upfront ADR (rejected — the user's own instruction for this
+planning pass is explicit: evidence representation must be designed and
+documented before implementation).
+**Why**: This is the Stage-3-specific requirement most likely to be skipped
+by accident — embeddings are the first scoring signal in this project that
+doesn't naturally come with a human-readable "why" the way phrase matching
+does, so the discipline has to be stated explicitly rather than assumed to
+follow automatically from the existing pattern.
+
+### D-054: The M3 source-discovery workflow is a structured, human-driven
+tool; no autonomous search-engine querying or scraping
+**Decision**: `job-scout discover` (D2) takes structured input a human
+already has in hand (e.g. a list of candidate URLs/names/regions to
+evaluate, or a small, explicit checklist the human fills in) and produces
+well-formed candidate `SourceRegistryEntry` YAML for review — it does not
+itself query a search engine, crawl the web, or scrape any external site to
+*find* candidates. `access_mode: search_discovery` remains permanently
+non-executable (unchanged from D-010); this ADR does not touch the
+compliance gate.
+**Alternatives**: An automated discovery mechanism that queries a search
+engine or crawls for candidate job-source URLs (rejected for M3 — this
+re-raises exactly the terms-of-service caution CLAUDE.md hard constraint 1
+already applies to adapters, and "how do we find sources" deserves the same
+explicit, source-by-source terms review this project already requires
+before any adapter is built, not an automated shortcut around it).
+**Why**: Matches the user's explicit instruction for this planning pass
+("prefer a structured/manual workflow; do NOT implement autonomous
+search-engine scraping or another mechanism that could bypass the project's
+terms/compliance discipline") and keeps D2 additive to, not a replacement
+for, the human judgement M2's own manual source-priority-matrix work
+already relied on (`MILESTONE_2.md` Deliverable 4).
+
+### D-055: Email-alert ingestion is removed from Milestone 3 and deferred
+to its own, not-yet-scoped future milestone
+**Decision**: Email-alert ingestion (Naukri, iimjobs, foundit, Indeed
+alerts, Naukrigulf, GulfTalent, Bayt) — previously re-sequenced from M2 to
+M3 by D-035/D-044 — is removed from Milestone 3's approved scope. It
+remains a real, intended capability, deferred to its own future milestone
+(tentatively numbered M4.5, or a standalone milestone — not yet finalized),
+not folded into M3 and not assigned a firm number by this ADR.
+**Alternatives**: Keeping it in M3 as D-035/D-044 originally re-sequenced
+(rejected — the M3 planning report identified it as architecturally
+uncoupled from M3's other three deliverables — no adapter, no
+`SourceSearchParams`, no query-planner involvement; an ingestion path, not
+a fetch path — and as introducing a genuinely new risk/credential category
+(mailbox OAuth/IMAP, reading a user's real inbox) this project has not
+handled before; bundling it into M3 anyway would repeat the exact
+over-scoping pattern D-035 itself was written to correct).
+**Why**: Directly matches the user's explicit instruction approving this
+split. Supersedes D-035/D-044 specifically on this one point (both ADRs
+otherwise stand — the general source-discovery workflow they also
+re-sequenced to M3 is retained in M3 as D2). `ROADMAP.md`'s Milestone 3
+section is updated accordingly.
+
+### D-056: M3's Stage 5 re-tune uses the existing two-profession evaluation
+dataset by default; a third profession group is added only if needed to
+expose a real regression or validate generality, not as a general
+dataset-growth effort
+**Decision**: D4 (Stage 5 weight re-tuning) re-tunes weights against the
+existing `tests/fixtures/evaluation/` dataset (`strategy_chief_of_staff/`,
+`software_engineering/`, 15 fixtures each, D-043) by default. A third
+profession-shaped fixture group may be added during D4's implementation
+only if the existing two groups don't exercise a real regression the
+re-tune needs to guard against, or don't demonstrate the new Stage 3 signal
+generalising across professions — not as a standing effort to grow the
+dataset toward statistical robustness (that remains R-11's explicitly
+deferred, real-usage-driven concern, `MILESTONE_2.md`).
+**Alternatives**: Committing to a larger, synthetic multi-profession
+dataset expansion as part of D4 (rejected — the user's own instruction is
+explicit: do not attempt to solve the project's long-term
+real-usage/statistical-evaluation problem with a large synthetic dataset).
+**Why**: Keeps D4 scoped to what it actually needs (re-tuning weights,
+measured against the existing evaluate tool) rather than re-opening R-11
+under cover of a weight change — the same "smallest change that satisfies
+the actual requirement" discipline this project applied to D-015, D-033,
+and others.

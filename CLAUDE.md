@@ -12,12 +12,14 @@ strategy/transformation/chief-of-staff/program-management roles) is one
 configuration of the engine, not the engine's scope — see `decisions.md`
 D-017. Read `architecture.md` first — it is the design contract.
 `MILESTONE_1.md`, `MILESTONE_1_1.md`, and `MILESTONE_2.md` describe what's
-implemented (Milestone 2 Deliverable 5 Tasks 1–11 are implemented and
-committed; Task 12 end-to-end acceptance/remediation is in progress — see
-"Milestone 2 status and implementation discipline" below); `decisions.md`
-explains why non-obvious choices were made; `ROADMAP.md` shows what comes
-after and, just as importantly, what doesn't happen yet (Milestone 3+ is not
-authorized to implement).
+implemented (Milestone 1, Milestone 1.1, and Milestone 2 — including Task
+12 end-to-end acceptance — are all implemented, accepted, and committed;
+see "Milestone 2 status and implementation discipline" below);
+`MILESTONE_3.md` defines the active milestone's scope (defined, not yet
+implemented — see "Milestone 3 status and implementation discipline"
+below); `decisions.md` explains why non-obvious choices were made;
+`ROADMAP.md` shows what comes after and, just as importantly, what doesn't
+happen yet (Milestone 3+ is not authorized to implement).
 
 ## Hard constraints — do not violate these
 
@@ -43,15 +45,17 @@ authorized to implement).
    through the registry + planner; a role/region should never silently assume
    one fixed set of sources.
 7. **Stay within the current milestone.** Check `MILESTONE_1.md`'s,
-   `MILESTONE_1_1.md`'s, and `MILESTONE_2.md`'s "in scope" / "explicitly out
-   of scope" lists before adding anything — this project has a documented
-   tendency to over-scope (see the original requirements' own
-   regional-source breadth), and the milestone boundary is intentional.
-   Milestone 2 Deliverable 5 Tasks 1–11 are now implemented; don't start
-   Milestone 3+ work (email-alert ingestion, automatic source-discovery,
-   semantic/embedding matching, notification delivery, scheduling) without
-   the user explicitly asking. See "Milestone 2 status and implementation
-   discipline" below.
+   `MILESTONE_1_1.md`'s, `MILESTONE_2.md`'s, and `MILESTONE_3.md`'s "in
+   scope" / "explicitly out of scope" lists before adding anything — this
+   project has a documented tendency to over-scope (see the original
+   requirements' own regional-source breadth), and the milestone boundary
+   is intentional. Milestone 2 (including Deliverable 5's Task 12
+   acceptance) is fully implemented; Milestone 3's scope is defined but
+   **not** authorized to implement. Don't start Milestone 3 work, or any
+   Milestone 4+ work (email-alert ingestion, LLM/generative extraction,
+   notification delivery, scheduling), without the user explicitly asking.
+   See "Milestone 2 status and implementation discipline" and "Milestone 3
+   status and implementation discipline" below.
 8. **Never put real personal data into a tracked file.** The packaged
    templates under `src/job_scout/resources/templates/` (and, historically,
    `config/*.example.yaml` — see `decisions.md` D-021) must stay generic
@@ -118,24 +122,24 @@ including `paths.py` (`AppPaths`), `resources/` (packaged templates), and
 ## Milestone 2 status and implementation discipline
 
 Milestone 2 (`MILESTONE_2.md`, `decisions.md` D-035 through D-051) is
-**implemented**: Deliverable 5's twelve-step sequence — canonical
-normalization/`SourceCapabilities`, the `SearchProfile`-driven query
-planner, the Reed/Greenhouse/Lever adapters, the company watchlist,
+**implemented and accepted**: Deliverable 5's twelve-step sequence —
+canonical normalization/`SourceCapabilities`, the `SearchProfile`-driven
+query planner, the Reed/Greenhouse/Lever adapters, the company watchlist,
 cross-source deduplication, sponsor-registry + visa enrichment, and the
 `job-scout evaluate` calibration tool — was built and committed
 task-by-task, in order. Task 12 (end-to-end acceptance) found no BLOCKER
-defects; a small set of REQUIRED remediation items (a missing `sources`
-CLI command, a stale packaging-test assertion, a missing `init` next-steps
-message, and doc-consistency corrections) is being closed out before final
-sign-off. Nothing above changes because M2 is implemented: constraints
-1–10 apply to M2's code exactly as they applied to M1/1.1, and continue to
-apply to any further M2 remediation work.
+defects; the small set of REQUIRED remediation items it surfaced (a missing
+`sources` CLI command, a stale packaging-test assertion, a missing `init`
+next-steps message, and doc-consistency corrections) has been closed out
+and committed (`chore: finalize Milestone 2 acceptance`). Nothing above
+changes because M2 is implemented: constraints 1–10 apply to M2's code
+exactly as they applied to M1/1.1, and continue to apply to any future work
+that touches M2's code.
 
-- Milestone 2 implementation is done; do not re-implement or redesign an
-  already-shipped M2 task. If you find what looks like a gap, treat it as a
-  possible Task 12 remediation item (verify against `MILESTONE_2.md`'s
-  acceptance criteria and Deliverable 5 first) rather than assuming it's
-  unbuilt.
+- Milestone 2 implementation is done and accepted; do not re-implement or
+  redesign an already-shipped M2 task. If you find what looks like a gap,
+  verify it against `MILESTONE_2.md`'s acceptance criteria and Deliverable 5
+  first, rather than assuming it's unbuilt.
 - Do not begin Milestone 3+ implementation until the user explicitly asks.
   Being in this section of CLAUDE.md is not that ask.
 - Do not start Milestone 3+ work (email-alert ingestion, automatic
@@ -153,6 +157,42 @@ apply to any further M2 remediation work.
   dataset; it does not add LLM/embedding scoring, and it does not by itself
   change `notification_thresholds`.
 
-## Before implementing beyond Milestone 2
+## Milestone 3 status and implementation discipline
+
+Milestone 3 (`MILESTONE_3.md`, `decisions.md` D-052 through D-056) is the
+**active milestone** — its scope is defined (exactly four deliverables:
+D1 additional regional adapters, D2 the `job-scout discover`
+source-discovery workflow, D3 embedding-based Stage 3 semantic similarity,
+D4 a Stage 5 weight re-tune) but **not yet implemented**. Email-alert
+ingestion is explicitly **not** part of Milestone 3 (`decisions.md` D-055)
+— it is deferred to its own, not-yet-scoped future milestone. Nothing
+above changes because M3 is scoped: constraints 1–10 apply to M3 exactly
+as they applied to M1/1.1/M2.
+
+- Do not begin Milestone 3 implementation until the user explicitly asks.
+  Being in this section of CLAUDE.md is not that ask.
+- When implementation is authorized, treat D1/D2/D3 as independent (any
+  order, or in parallel) and D4 as depending on D3 — see `MILESTONE_3.md`'s
+  sequencing section — not as one large, unreviewable change.
+- D3's embedding backend must be **local only** — no API embedding
+  provider, no LLM/generative call, no vector database (`decisions.md`
+  D-052) — and its evidence representation must be designed and documented
+  before code is written, never a bare similarity number (`decisions.md`
+  D-053).
+- D2's discovery technique must stay a structured, human-driven workflow —
+  no autonomous search-engine querying or scraping (`decisions.md` D-054);
+  `access_mode: search_discovery` stays permanently non-executable
+  (unchanged from D-010).
+- Do not start email-alert ingestion, notification delivery, scheduling, or
+  M4 LLM/generative extraction under cover of an M3 task. See `ROADMAP.md`.
+- No source becomes `approved`/executable without the same compliance-gate
+  discipline hard constraint 1 already requires — every new M3 adapter
+  ships `manual_review` by default, only after its real contract/terms are
+  verified.
+- D4 changes scoring weights only — no change to `notification_thresholds`
+  or the `ScoreComponent`/`ScoringWeights` schema, and no large synthetic
+  evaluation-dataset expansion (`decisions.md` D-056).
+
+## Before implementing beyond Milestone 3
 
 Don't. Check `ROADMAP.md` and ask the user first.

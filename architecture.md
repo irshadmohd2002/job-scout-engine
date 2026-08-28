@@ -945,6 +945,12 @@ src/job_scout/
 │   ├── __init__.py
 │   ├── registry.py          # load/validate source registry YAML
 │   ├── planner.py            # §6 — builds SearchExecutionPlan
+│   ├── query_planner.py       # §6 — SearchProfile-driven PlannedQuery
+│   │                           # generation, added Milestone 2 Deliverable 5
+│   │                           # step 3 (decisions.md D-037/D-041)
+│   ├── sponsor_registry.py     # §21 — UK sponsor-register import/parsing +
+│   │                           # find_sponsor_match, added Milestone 2
+│   │                           # Deliverable 5 step 10 (decisions.md D-050)
 │   └── compliance.py          # §7 — ComplianceGate.authorize()
 ├── sources/
 │   ├── __init__.py
@@ -957,15 +963,25 @@ src/job_scout/
 │   ├── __init__.py
 │   ├── hard_filters.py           # Stage 1
 │   ├── prefilter.py                # Stage 2
-│   └── scoring.py                   # Stage 5 (score components carry the
-│                                     # reserved-but-unused Stage 3/4 hooks as
-│                                     # optional model fields, not extra files)
+│   ├── scoring.py                   # Stage 5 (score components carry the
+│   │                                 # reserved-but-unused Stage 3/4 hooks as
+│   │                                 # optional model fields, not extra files)
+│   ├── visa.py                       # §21 — assess_visa(), added Milestone 2
+│   │                                 # Deliverable 5 step 10 (decisions.md D-050)
+│   └── visa_patterns.py               # §21 — shared visa positive/negative
+│                                       # regex patterns, added Milestone 2
+│                                       # Deliverable 5 step 10 (decisions.md D-050)
 ├── repository/
 │   ├── __init__.py
 │   ├── base.py                       # JobRepository Protocol (§4)
 │   └── sqlite_repo.py                  # SqliteJobRepository
 ├── pipeline.py                          # orchestrates the sequence in §11
-└── cli.py                                # Typer app: run-once, plan
+├── evaluation.py                         # §22 — job-scout evaluate calibration
+│                                          # tool, added Milestone 2 Deliverable 5
+│                                          # step 11 (decisions.md D-043/D-051)
+└── cli.py                                # Typer app: run-once, plan, init,
+                                           # version, sources, sponsors import,
+                                           # evaluate
 ```
 
 This structure is implemented as proposed, with two additions:

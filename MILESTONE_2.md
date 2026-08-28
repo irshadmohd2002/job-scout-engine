@@ -1,18 +1,22 @@
 # Milestone 2 — Multi-Source Discovery & Sponsorship Intelligence
 
-Status: **Deliverable 5 Tasks 1–11 implemented and committed; Task 12
-(end-to-end acceptance/remediation) in progress.** This document was
-originally written as a scope contract before any Milestone 2 code changed,
-per this project's ground rules ("Before implementing beyond Milestone 1.1:
-Don't. Check `ROADMAP.md` and ask the user first."); that scope was then
-built task-by-task through the Deliverable 5 sequence below, each task
-committed in turn. Milestone 1 and Milestone 1.1 are both implemented and
-released (tag `v0.1.0`) — see `MILESTONE_1.md`/`MILESTONE_1_1.md` and
-`decisions.md` D-001 through D-034. Baseline at the time this document was
-first written: `pytest` 288 passed / 1 skipped / 3 deselected, `ruff check .`
-clean, `mypy --strict src` clean. Current suite (post-Deliverable-5): 616
-passed / 1 skipped / 4 deselected, `ruff check .` clean, `mypy --strict src`
-clean — see the Task 12 acceptance audit for the full remediation list.
+Status: **Implemented and accepted.** Deliverable 5's twelve-step sequence
+(Tasks 1–11) and Task 12 (end-to-end acceptance/remediation) are both
+complete. This document was originally written as a scope contract before
+any Milestone 2 code changed, per this project's ground rules ("Before
+implementing beyond Milestone 1.1: Don't. Check `ROADMAP.md` and ask the
+user first."); that scope was then built task-by-task through the
+Deliverable 5 sequence below, each task committed in turn, and Task 12's
+REQUIRED remediation items (a missing `sources` CLI command, a stale
+packaging-test assertion, a missing `init` next-steps message, and
+doc-consistency corrections) were closed out and committed (`chore:
+finalize Milestone 2 acceptance`). Milestone 1 and Milestone 1.1 are both
+implemented and released (tag `v0.1.0`) — see
+`MILESTONE_1.md`/`MILESTONE_1_1.md` and `decisions.md` D-001 through D-034.
+Baseline at the time this document was first written: `pytest` 288 passed /
+1 skipped / 3 deselected, `ruff check .` clean, `mypy --strict src` clean.
+Final suite at acceptance: 624 passed / 1 skipped / 4 deselected, `ruff
+check .` clean, `mypy --strict src` clean.
 
 ## Goal
 

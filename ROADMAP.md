@@ -21,7 +21,7 @@ committed, and released as `v0.1.0`. A subsequent round of matching-quality
 fixes (`decisions.md` D-028 through D-034) landed on top of that release
 without changing either milestone's acceptance criteria.
 
-## Milestone 2 — Multi-source discovery & sponsorship intelligence (scope refined, not started)
+## Milestone 2 — Multi-source discovery & sponsorship intelligence (implemented)
 See `MILESTONE_2.md` for the full scope contract, refined 2026-08-08
 (`decisions.md` D-040 through D-044). A formalised canonical-normalization
 boundary (`Job` confirmed as the model every adapter normalizes into) and a
@@ -35,11 +35,11 @@ corroboration (a Netherlands provider is designed but optional/stretch,
 non-blocking). A multi-profession, five-label evaluation dataset (including
 a `deceptive_false_positive` category) backs the `job-scout evaluate`
 calibration tool. Still local, single-user, synchronous, deterministic — no
-notification delivery, no scheduler. This supersedes the previous draft of
-this section (see below); do not begin implementation without the user
-explicitly asking, per this project's ground rules — implementation, when
-authorized, proceeds task-by-task through `MILESTONE_2.md` Deliverable 5's
-twelve-step sequence, not all at once.
+notification delivery, no scheduler. This superseded the previous draft of
+this section (see below); implementation proceeded task-by-task through
+`MILESTONE_2.md` Deliverable 5's twelve-step sequence, and Task 12
+(end-to-end acceptance/remediation) is complete — see `MILESTONE_2.md`'s
+status line and `decisions.md` D-035 through D-051.
 
 **Superseded from the original M2 draft** (see `decisions.md` D-035 for the
 full reasoning):
@@ -64,24 +64,51 @@ full reasoning):
   (Workstream D and the source priority matrix, respectively) rather than
   just named.
 
-## Milestone 3 — Semantic similarity & email-alert ingestion
-- Embedding-based Stage 3 matching to catch role equivalents that keyword
-  overlap misses ("Head of Special Projects" ↔ strategic initiatives, "Office
-  of the Managing Director" ↔ chief of staff, etc.).
-- Re-tune Stage 5 weights now that responsibilities/sector components have a
-  stronger signal than the M1 keyword proxy — and now that Milestone 2's
-  `job-scout evaluate` tool exists to measure the effect empirically rather
-  than by inspection alone.
-- Email-alert ingestion (Naukri, iimjobs, foundit, Indeed alerts, Naukrigulf,
-  GulfTalent, Bayt) — parse forwarded/ingested alert emails into
-  `RawJobRecord`s through the same normalisation path as any adapter.
-  Re-sequenced here from the original Milestone 2 draft — see above.
-- A general, human-reviewed source-discovery workflow (`architecture.md`
-  §9) — also re-sequenced here from the original Milestone 2 draft.
-- Additional approved public sources per region as terms review clears them
-  (UK Find a Job, EURES, Canada Job Bank — all marked `requires verification`
-  in `MILESTONE_2.md`'s source priority matrix, not yet confirmed to have a
-  real programmatic interface).
+## Milestone 3 — Regional source expansion, source discovery, and semantic matching (scope defined, not started)
+See `MILESTONE_3.md` for the full scope contract (`decisions.md` D-052
+through D-056). Four deliverables, D1–D3 independent of each other and D4
+depending on D3:
+- **D1** — additional regional public-source adapters (UK Find a Job,
+  EURES, Canada Job Bank), each built only after its real contract/terms
+  are verified — the same evidence bar Reed/Greenhouse/Lever were held to
+  (`decisions.md` D-016/D-027/D-028/D-031/D-046/D-047/D-048). All marked
+  `requires verification` in `MILESTONE_2.md`'s source priority matrix; not
+  yet confirmed to have a real programmatic interface.
+- **D2** — a general, human-reviewed source-discovery workflow
+  (`architecture.md` §9), exposed as `job-scout discover`: a structured,
+  human-driven tool that proposes candidate `SourceRegistryEntry` rows for
+  manual review — never automatic search-engine querying/scraping, never
+  auto-approved, never auto-executable (`decisions.md` D-054;
+  `access_mode: search_discovery` stays permanently non-executable,
+  unchanged from D-010).
+- **D3** — embedding-based Stage 3 semantic matching, to catch role
+  equivalents that keyword overlap misses ("Head of Special Projects" ↔
+  strategic initiatives, "Office of the Managing Director" ↔ chief of
+  staff, etc.), using a **local** embedding backend only (no API embedding
+  provider, no LLM/generative call, no vector database) behind a narrow,
+  replaceable interface, with an explicit, documented evidence
+  representation so a semantic match stays human-interpretable, not a bare
+  similarity number (`decisions.md` D-052/D-053).
+- **D4** — re-tune Stage 5 weights now that Stage 3 gives
+  responsibilities/sector components a stronger real signal, measured
+  empirically via Milestone 2's `job-scout evaluate` tool against a
+  documented pre-M3 baseline, not by inspection alone. Weights only —
+  `notification_thresholds` and the `ScoreComponent`/`ScoringWeights`
+  schema are unchanged (`decisions.md` D-056).
+
+Still local, single-user, synchronous, deterministic — no notification
+delivery, no scheduler, no LLM/generative extraction. Do not begin
+implementation without the user explicitly asking, per this project's
+ground rules.
+
+**Removed from M3** (`decisions.md` D-055): email-alert ingestion (Naukri,
+iimjobs, foundit, Indeed alerts, Naukrigulf, GulfTalent, Bayt), previously
+re-sequenced here from the original Milestone 2 draft, is no longer part of
+Milestone 3. It remains a real, intended capability, deferred to its own
+future milestone (tentatively numbered M4.5, or a standalone milestone —
+not yet finalized), given its materially different risk profile (mailbox
+OAuth/IMAP credential handling, reading a user's real inbox) and its lack
+of architectural coupling to M3's other three deliverables.
 
 ## Milestone 4 — Optional Anthropic enrichment
 - Stage 4 LLM extraction for shortlisted jobs only, behind the optional `llm`
