@@ -81,12 +81,13 @@ job-scout init
 ```
 
 `job-scout init` (optionally `job-scout init --data-dir <path>` to choose
-where) creates your config/data/logs/cache directories, copies six starter
+where) creates your config/data/logs/cache directories, copies eight starter
 config files (candidate profile, search profiles, source registry,
-execution limits, scoring weights, source-scoring weights) to your data
-directory, and initialises a local SQLite database. It's idempotent — safe
-to run again — and never overwrites a file you've already edited, and never
-generates a populated `.env` or any credential.
+execution limits, scoring weights, source-scoring weights, company
+watchlist, sponsor registries) to your data directory, and initialises a
+local SQLite database. It's idempotent — safe to run again — and never
+overwrites a file you've already edited, and never generates a populated
+`.env` or any credential.
 
 Then, in your own data directory (`job-scout init`'s output tells you
 exactly where):

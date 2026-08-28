@@ -10,8 +10,10 @@
 # here does not make Greenhouse or Lever executable — that still requires
 # the corresponding source_registry.yaml entry's approval_status to be
 # promoted to `approved` by you, after reviewing that source's current
-# terms yourself (CLAUDE.md hard constraint 1), and the corresponding
-# adapter to exist (Greenhouse/Lever adapters are not implemented yet).
+# terms yourself (CLAUDE.md hard constraint 1). The Greenhouse/Lever
+# adapters themselves are implemented and ship `manual_review` by default —
+# an empty watchlist here means they simply fetch nothing (zero watchlist
+# entries -> zero calls -> zero jobs), not that the adapter is missing.
 #
 # Fields:
 #   company_name          Human-readable display name (identity only — not

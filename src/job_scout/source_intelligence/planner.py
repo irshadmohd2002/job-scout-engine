@@ -202,13 +202,17 @@ def _score_source(
     return sum(breakdown.values()), breakdown
 
 
-def _effective_config_status(entry: SourceRegistryEntry, env: EnvConfig | None) -> ConfigStatus:
+def effective_config_status(entry: SourceRegistryEntry, env: EnvConfig | None) -> ConfigStatus:
     """Runtime-derived config status, distinct from `entry.config_status`
     (the registry's static, user-maintained metadata — architecture.md
     section 4 "config vs. database boundary", decisions.md D-009 keeps that
     field YAML-first). `env is None` means the caller has no runtime
     credential information available (e.g. an env-agnostic caller/test) —
     fall back to the declared status unchanged rather than guessing.
+
+    Public (not `_`-prefixed): both `build_plan` and the `job-scout sources`
+    CLI command (MILESTONE_2.md "CLI changes"; decisions.md D-041) need this
+    same live-credential check, independent of any search profile.
 
     Milestone 1 shipped exactly one adapter (`adzuna_api`, decisions.md
     D-002); Milestone 2 Deliverable 5 step 5 adds `reed_api` (decisions.md
@@ -439,7 +443,7 @@ def build_plan(
                 estimated_request_count=estimated_request_count,
                 polling_frequency_minutes=entry.polling_frequency_minutes,
                 config_status=entry.config_status,
-                effective_config_status=_effective_config_status(entry, env),
+                effective_config_status=effective_config_status(entry, env),
                 required_setup_actions=[]
                 if decision.allowed
                 else list(entry.required_setup_actions),

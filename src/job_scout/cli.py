@@ -1,5 +1,5 @@
-"""Typer CLI: `init`, `version`, `plan`, `run-once`, `sponsors import`,
-`evaluate`."""
+"""Typer CLI: `init`, `version`, `plan`, `sources`, `run-once`,
+`sponsors import`, `evaluate`."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import typer
 from job_scout.bootstrap import run_init
 from job_scout.config import (
     ConfigError,
+    EnvConfig,
     ExecutionLimits,
     SourceScoringWeights,
     get_search_profile,
@@ -44,7 +45,7 @@ from job_scout.models import (
 from job_scout.paths import resolve_app_paths
 from job_scout.pipeline import RunOnceResult, run_once
 from job_scout.repository.sqlite_repo import SqliteJobRepository
-from job_scout.source_intelligence.planner import build_plan
+from job_scout.source_intelligence.planner import build_plan, effective_config_status
 from job_scout.source_intelligence.registry import load_registry
 from job_scout.source_intelligence.sponsor_registry import (
     SponsorRegisterParseError,
@@ -96,8 +97,9 @@ def init(
     data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
 ) -> None:
     """Bootstrap a per-user data directory: create config/data/logs/cache,
-    copy the six starter config templates, and initialise the local SQLite
-    database (architecture.md section 15.3; decisions.md D-019/D-020).
+    copy the eight starter config templates, and initialise the local
+    SQLite database (architecture.md section 15.3; decisions.md
+    D-019/D-020).
 
     Idempotent and non-interactive: an existing file or database is never
     overwritten, and no populated .env or credential is ever created — you
@@ -141,7 +143,10 @@ def init(
         "and search_profiles.yaml at minimum.\n"
         "  2. Supply your own API credentials separately: set real environment variables, "
         f"or create {app_paths.environment_file_path} yourself (never generated for you).\n"
-        "  3. Run 'job-scout plan --profile <your-profile-id>' to sanity-check source "
+        "  3. Watchlist-scoped sources (Greenhouse, Lever) fetch nothing until you populate "
+        "company_watchlist.yaml with the companies you want to watch — an empty watchlist is "
+        "valid but yields zero jobs from those sources (MILESTONE_2.md R-10).\n"
+        "  4. Run 'job-scout plan --profile <your-profile-id>' to sanity-check source "
         "selection before spending any API quota."
     )
 
@@ -341,6 +346,79 @@ def plan(
         typer.echo(json.dumps(result.model_dump(mode="json"), indent=2))
     else:
         typer.echo(_format_plan_human(result))
+
+
+def _format_sources_human(registry: list[SourceRegistryEntry], env: EnvConfig) -> str:
+    lines: list[str] = []
+    lines.append(f"Source registry ({len(registry)} entries):")
+    if not registry:
+        lines.append("  (none)")
+    for entry in registry:
+        lines.append(f"  - {entry.source_id} ({entry.name})")
+        lines.append(
+            f"      source_type={entry.source_type}  access_mode={entry.access_mode}  "
+            f"approval_status={entry.approval_status}"
+        )
+        lines.append(
+            f"      config_status={entry.config_status} (declared, static registry metadata)  "
+            f"effective_config_status={effective_config_status(entry, env)} "
+            "(runtime credential check)"
+        )
+        lines.append(f"      adapter_ref={entry.adapter_ref}")
+        lines.append(f"      capabilities={entry.capabilities.model_dump(mode='json')}")
+    return "\n".join(lines)
+
+
+@app.command()
+def sources(
+    source_registry: Path | None = typer.Option(
+        None,
+        "--source-registry",
+        help="Path to source_registry.yaml (default: resolved from --data-dir).",
+    ),
+    env_path: Path | None = typer.Option(
+        None,
+        "--env-file",
+        help="Path to .env, read only to compute effective_config_status per source "
+        "(default: resolved data directory's .env, falling back to ./.env). Loading this "
+        "file never performs a network call — sources never touches a source adapter.",
+    ),
+    data_dir: Path | None = typer.Option(None, "--data-dir", help=_DATA_DIR_HELP),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the full structured registry listing as JSON."
+    ),
+) -> None:
+    """List every SourceRegistryEntry in the loaded registry — id, source_type,
+    access_mode, approval_status, config_status/effective_config_status,
+    adapter_ref, and its full capabilities block — independent of any search
+    profile (MILESTONE_2.md "CLI changes"; decisions.md D-041). Read-only:
+    never calls a source adapter and never consumes API quota, same
+    guarantee as `plan`."""
+    try:
+        registry = load_registry(source_registry, data_dir=data_dir)
+        env = load_env(env_path, data_dir=data_dir)
+    except ConfigError as exc:
+        typer.echo(f"Configuration error: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    if json_output:
+        payload = [
+            {
+                "source_id": entry.source_id,
+                "name": entry.name,
+                "source_type": entry.source_type.value,
+                "access_mode": entry.access_mode.value,
+                "approval_status": entry.approval_status.value,
+                "config_status": entry.config_status.value,
+                "effective_config_status": effective_config_status(entry, env).value,
+                "adapter_ref": entry.adapter_ref,
+                "capabilities": entry.capabilities.model_dump(mode="json"),
+            }
+            for entry in registry
+        ]
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        typer.echo(_format_sources_human(registry, env))
 
 
 def _format_score_components(match_result: MatchResult) -> list[str]:

@@ -1204,10 +1204,23 @@ database and a pre-1.1 Milestone 1 database (never versioned, reads `0`)
 are both stamped `1`; a database whose version is greater than this build's
 `_SCHEMA_VERSION` raises `SchemaVersionError` and refuses to run. See
 D-026 — 1.1 introduces no schema change, so this is purely the versioning
-mechanism itself, not a migration. Milestone 2 Deliverable 5 step 9 (§20) is
-the first change that bumps `_SCHEMA_VERSION` from `1` to `2` — a purely
-additive `CREATE INDEX IF NOT EXISTS`; a `1`-stamped database upgrades to `2`
-the same no-op way on next open, with no data loss.
+mechanism itself, not a migration. Milestone 2 performs two separate,
+purely additive increments, never reusing a version number for two
+different schema shapes (decisions.md D-049/D-050):
+
+- Deliverable 5 step 9 (§20) bumps `_SCHEMA_VERSION` from `1` to `2` —
+  a new non-unique `CREATE INDEX IF NOT EXISTS` on
+  `job_fingerprints.canonical_url`, nothing else. A `1`-stamped database
+  upgrades to `2` the same no-op way on next open, with no data loss.
+- Deliverable 5 step 10 (§21) bumps `_SCHEMA_VERSION` again, from `2` to
+  `3` — the new `sponsor_registry_entries` table plus two new indexed
+  columns on `visa_assessments` (see §21's "Schema" bullet for the full
+  list). A `2`-stamped database (step-9-only code) upgrades to `3` the
+  same no-op, additive way; code that only understands up to `2` still
+  correctly refuses a `3`-stamped database via `SchemaVersionError`,
+  preserving D-026's guarantee.
+
+`_SCHEMA_VERSION` is `3` as of the end of Milestone 2 Deliverable 5.
 
 ### 15.7 Industry/sector/seniority source-selection signal
 

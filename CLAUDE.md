@@ -11,12 +11,13 @@ experience. The originally-built example profile (international
 strategy/transformation/chief-of-staff/program-management roles) is one
 configuration of the engine, not the engine's scope — see `decisions.md`
 D-017. Read `architecture.md` first — it is the design contract.
-`MILESTONE_1.md` and `MILESTONE_1_1.md` describe what's implemented and
-released; `MILESTONE_2.md` defines the active milestone's scope (defined and
-refined, not yet implemented — see "Milestone 2 status and implementation
-discipline" below); `decisions.md` explains why non-obvious choices were
-made; `ROADMAP.md` shows what comes after and, just as importantly, what
-doesn't happen yet.
+`MILESTONE_1.md`, `MILESTONE_1_1.md`, and `MILESTONE_2.md` describe what's
+implemented (Milestone 2 Deliverable 5 Tasks 1–11 are implemented and
+committed; Task 12 end-to-end acceptance/remediation is in progress — see
+"Milestone 2 status and implementation discipline" below); `decisions.md`
+explains why non-obvious choices were made; `ROADMAP.md` shows what comes
+after and, just as importantly, what doesn't happen yet (Milestone 3+ is not
+authorized to implement).
 
 ## Hard constraints — do not violate these
 
@@ -46,10 +47,11 @@ doesn't happen yet.
    of scope" lists before adding anything — this project has a documented
    tendency to over-scope (see the original requirements' own
    regional-source breadth), and the milestone boundary is intentional.
-   `MILESTONE_2.md`'s scope being defined and refined is not the same as
-   Milestone 2 being authorized to implement — don't write Milestone 2 code,
-   and don't start Milestone 3+ work, without the user explicitly asking.
-   See "Milestone 2 status and implementation discipline" below.
+   Milestone 2 Deliverable 5 Tasks 1–11 are now implemented; don't start
+   Milestone 3+ work (email-alert ingestion, automatic source-discovery,
+   semantic/embedding matching, notification delivery, scheduling) without
+   the user explicitly asking. See "Milestone 2 status and implementation
+   discipline" below.
 8. **Never put real personal data into a tracked file.** The packaged
    templates under `src/job_scout/resources/templates/` (and, historically,
    `config/*.example.yaml` — see `decisions.md` D-021) must stay generic
@@ -115,25 +117,35 @@ including `paths.py` (`AppPaths`), `resources/` (packaged templates), and
 
 ## Milestone 2 status and implementation discipline
 
-Milestone 2 is the **active milestone** — its scope is defined and refined
-(`MILESTONE_2.md`, `decisions.md` D-035 through D-044) but **not yet
-implemented**. Nothing above changes because M2 exists: constraints 1–10
-apply to M2 exactly as they applied to M1/1.1.
+Milestone 2 (`MILESTONE_2.md`, `decisions.md` D-035 through D-051) is
+**implemented**: Deliverable 5's twelve-step sequence — canonical
+normalization/`SourceCapabilities`, the `SearchProfile`-driven query
+planner, the Reed/Greenhouse/Lever adapters, the company watchlist,
+cross-source deduplication, sponsor-registry + visa enrichment, and the
+`job-scout evaluate` calibration tool — was built and committed
+task-by-task, in order. Task 12 (end-to-end acceptance) found no BLOCKER
+defects; a small set of REQUIRED remediation items (a missing `sources`
+CLI command, a stale packaging-test assertion, a missing `init` next-steps
+message, and doc-consistency corrections) is being closed out before final
+sign-off. Nothing above changes because M2 is implemented: constraints
+1–10 apply to M2's code exactly as they applied to M1/1.1, and continue to
+apply to any further M2 remediation work.
 
-- Do not begin Milestone 2 implementation until the user explicitly asks.
+- Milestone 2 implementation is done; do not re-implement or redesign an
+  already-shipped M2 task. If you find what looks like a gap, treat it as a
+  possible Task 12 remediation item (verify against `MILESTONE_2.md`'s
+  acceptance criteria and Deliverable 5 first) rather than assuming it's
+  unbuilt.
+- Do not begin Milestone 3+ implementation until the user explicitly asks.
   Being in this section of CLAUDE.md is not that ask.
-- When implementation is authorized, proceed **task-by-task** through
-  `MILESTONE_2.md` Deliverable 5's twelve-step sequence, in order (steps
-  without a dependency on each other may run in parallel — see each step's
-  stated dependencies) — not as one large, unreviewable change.
 - Do not start Milestone 3+ work (email-alert ingestion, automatic
   source-discovery, semantic/embedding matching, notification delivery,
-  scheduling) under cover of an M2 task. See `ROADMAP.md`.
+  scheduling) under cover of an M2 fix. See `ROADMAP.md`.
 - No source becomes `approved`/executable without the same compliance-gate
-  discipline hard constraint 1 already requires — every new M2 adapter
-  (Reed, Greenhouse, Lever) ships `manual_review` by default; a user
-  promotes an entry in their own registry only after confirming current
-  terms themselves.
+  discipline hard constraint 1 already requires — every M2 adapter (Reed,
+  Greenhouse, Lever) ships `manual_review` by default; a user promotes an
+  entry in their own registry only after confirming current terms
+  themselves.
 - No notification delivery and no scheduler in Milestone 2 — both stay
   Milestone 5/6 territory (`ROADMAP.md`).
 - Deterministic matching stays the core of M2. `job-scout evaluate`

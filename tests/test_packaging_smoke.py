@@ -46,11 +46,33 @@ def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return wheels[0]
 
 
+EXPECTED_TEMPLATE_NAMES = {
+    "candidate_profile.example.yaml",
+    "search_profiles.example.yaml",
+    "scoring_weights.example.yaml",
+    "source_scoring_weights.example.yaml",
+    "execution_limits.example.yaml",
+    "source_registry.example.yaml",
+    # Milestone 2 Deliverable 5 steps 6/10 (decisions.md D-047/D-049): two
+    # new templates, alongside the original six, both copied by
+    # `job-scout init` the same never-overwrite way as the others.
+    "company_watchlist.example.yaml",
+    "sponsor_registries.example.yaml",
+}
+
+
 def test_wheel_contains_packaged_templates(built_wheel: Path) -> None:
     with zipfile.ZipFile(built_wheel) as zf:
         names = zf.namelist()
     template_entries = [n for n in names if "resources/templates/" in n and n.endswith(".yaml")]
-    assert len(template_entries) == 6, f"expected 6 templates in wheel, found: {template_entries}"
+    template_basenames = {Path(n).name for n in template_entries}
+    assert template_basenames == EXPECTED_TEMPLATE_NAMES, (
+        f"expected {sorted(EXPECTED_TEMPLATE_NAMES)} templates in wheel, "
+        f"found: {sorted(template_basenames)}"
+    )
+    assert len(template_entries) == len(EXPECTED_TEMPLATE_NAMES), (
+        f"expected {len(EXPECTED_TEMPLATE_NAMES)} templates in wheel, found: {template_entries}"
+    )
 
 
 @pytest.fixture(scope="module")
