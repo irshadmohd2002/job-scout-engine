@@ -1,0 +1,46 @@
+# Stage 3 semantic-similarity configuration (MILESTONE_3.md D3;
+# decisions.md D-052/D-053/D-057). Not personal data — pure algorithm/
+# backend tuning, same status as scoring_weights.yaml/execution_limits.yaml.
+#
+# `config.load_semantic_config()` falls back to this packaged template
+# automatically if no local semantic_matching.yaml override exists
+# (architecture.md section 15.2; decisions.md D-021).
+#
+# Implementation-phase note: this configuration surface exists ahead of
+# Stage 5 integration — nothing in the pipeline reads `enabled`/
+# `similarity_threshold`/`rescue_cap` yet, so changing these values
+# currently has no effect on scoring (decisions.md D-057's Stage 5 rescue
+# wiring lands in a later implementation phase of Milestone 3 D3).
+#
+# `job-scout init` copies this template to semantic_matching.yaml in your
+# own per-user data directory; adjust to taste once Stage 5 integration
+# lands.
+
+# Master switch for Stage 3 semantic matching. When false, Stage 3 never
+# constructs an embedding backend and Stage 5 scores keyword-only, exactly
+# as before D3.
+enabled: false
+
+# Local embedding model (fastembed / BAAI/bge-small-en-v1.5, 384-dim
+# quantized ONNX, CPU-only via ONNX Runtime — decisions.md D-057 point 1).
+# No API embedding provider, no LLM call, no vector database (decisions.md
+# D-052). Changing this to another fastembed-supported model name is
+# mechanically supported, but only bge-small-en-v1.5 has been verified
+# against this project's calibration finding (decisions.md D-057).
+model_name: BAAI/bge-small-en-v1.5
+
+# Minimum cosine similarity ([0, 1]) for a semantic match to rescue Stage
+# 5's title_role_family component (decisions.md D-057 point 6).
+# Deliberately left uncalibrated by D3 — Milestone 3 D4 tunes this
+# empirically via `job-scout evaluate`. D-057's calibration finding shows
+# the deceptive-false-positive/weak-match similarity bands overlapping up
+# to ~0.80, so a starting point at or above that ceiling is a reasonable
+# search starting point, not a validated default.
+similarity_threshold: 0.80
+
+# Ceiling ([0, 1]) on how much raw_value a semantic match may contribute to
+# title_role_family's rescue formula — semantic signal can only raise that
+# component's score, never lower it, and this cap keeps it from ever
+# outranking a real exact keyword match (decisions.md D-057 point 6). Also
+# uncalibrated by D3; D4 tunes this empirically.
+rescue_cap: 0.60

@@ -504,6 +504,52 @@ def load_source_scoring_weights(
     return weights
 
 
+# --- SemanticConfig ---------------------------------------------------------
+# Milestone 3 D3, Phase 1 (decisions.md D-057 point 8): Stage 3's own
+# configuration surface, kept separate from scoring_weights.yaml (which
+# stays weights-only per D4's own constraint, MILESTONE_3.md). Same
+# load-time packaged-template-fallback pattern as ExecutionLimits/
+# ScoringWeights/SourceScoringWeights above (decisions.md D-013/D-014/
+# D-021) — an explicit path must exist, a missing default_path falls back
+# to the packaged `semantic_matching.example.yaml` template. Phase 1 only
+# adds this config surface; nothing in the pipeline reads it yet (Stage 5
+# rescue integration is a later Milestone 3 D3 phase).
+
+
+class SemanticConfig(BaseModel):
+    enabled: bool
+    model_name: str = "BAAI/bge-small-en-v1.5"
+    similarity_threshold: float
+    rescue_cap: float
+
+    @field_validator("model_name")
+    @classmethod
+    def _model_name_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("similarity_threshold", "rescue_cap")
+    @classmethod
+    def _fraction_in_range(cls, value: float) -> float:
+        if not (0.0 <= value <= 1.0):
+            raise ValueError("must be between 0 and 1")
+        return value
+
+
+def load_semantic_config(
+    path: Path | None = None, *, data_dir: Path | None = None
+) -> SemanticConfig:
+    default_path = resolve_app_paths(data_dir_override=data_dir).semantic_matching_path
+    data, label = _load_with_template_fallback(
+        path, default_path, "semantic_matching.example.yaml"
+    )
+    try:
+        return SemanticConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError.from_validation_error(label, exc) from exc
+
+
 # --- Environment (.env) -----------------------------------------------------
 
 

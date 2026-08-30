@@ -26,6 +26,8 @@ def test_platform_appropriate_default_when_nothing_else_set() -> None:
     assert app_paths.cache_dir == expected / "cache"
     assert app_paths.candidate_profile_path == expected / "config" / "candidate_profile.yaml"
     assert app_paths.company_watchlist_path == expected / "config" / "company_watchlist.yaml"
+    assert app_paths.semantic_matching_path == expected / "config" / "semantic_matching.yaml"
+    assert app_paths.embeddings_cache_dir == expected / "cache" / "embeddings"
     assert app_paths.environment_file_path == expected / ".env"
 
 

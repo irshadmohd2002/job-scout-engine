@@ -42,6 +42,10 @@ class AppPaths(BaseModel):
     execution_limits_path: Path
     scoring_weights_path: Path
     source_scoring_weights_path: Path
+    # Milestone 3 D3 (decisions.md D-057 point 8): same load-time
+    # packaged-template-fallback treatment as scoring_weights_path/
+    # execution_limits_path above.
+    semantic_matching_path: Path
     # Milestone 2 Deliverable 5 step 6: user-specific like candidate_profile_path
     # (no packaged-template fallback at load time — config.py's
     # load_company_watchlist reads this path directly, MILESTONE_2.md
@@ -52,6 +56,11 @@ class AppPaths(BaseModel):
     # load_sponsor_registries_config), never the imported register data
     # itself (that lives in the SQLite database, not YAML).
     sponsor_registries_path: Path
+    # Milestone 3 D3 (decisions.md D-057 point 9): the local embedding
+    # model's cache directory, under the existing per-user cache_dir —
+    # never inside the repository, never fastembed's own default OS cache
+    # path.
+    embeddings_cache_dir: Path
     environment_file_path: Path | None = None
 
 
@@ -92,7 +101,9 @@ def resolve_app_paths(
         execution_limits_path=config_dir / "execution_limits.yaml",
         scoring_weights_path=config_dir / "scoring_weights.yaml",
         source_scoring_weights_path=config_dir / "source_scoring_weights.yaml",
+        semantic_matching_path=config_dir / "semantic_matching.yaml",
         company_watchlist_path=config_dir / "company_watchlist.yaml",
         sponsor_registries_path=config_dir / "sponsor_registries.yaml",
+        embeddings_cache_dir=root / "cache" / "embeddings",
         environment_file_path=root / ".env",
     )

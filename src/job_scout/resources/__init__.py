@@ -14,6 +14,14 @@ such fallback in `config.py` — it is copied by `job-scout init` like every
 other template here, but `load_company_watchlist` reads the user's own
 `company_watchlist.yaml` directly, the same "no generic fallback" treatment
 as candidate_profile/search_profiles/source_registry.
+
+`semantic_matching.example.yaml` (Milestone 3 D3, decisions.md D-057 point
+8) follows the same load-time-fallback treatment as
+`execution_limits.example.yaml`/`scoring_weights.example.yaml`/
+`source_scoring_weights.example.yaml` above: `config.load_semantic_config`
+reads it automatically when no local `semantic_matching.yaml` override
+exists. It is not yet added to `bootstrap.py`'s `job-scout init` copy list
+— see that module's own note.
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ TEMPLATE_NAMES: tuple[str, ...] = (
     "source_scoring_weights.example.yaml",
     "company_watchlist.example.yaml",
     "sponsor_registries.example.yaml",
+    "semantic_matching.example.yaml",
 )
 
 

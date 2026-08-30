@@ -20,6 +20,9 @@ dependencies = [
 llm = [
     "anthropic>=0.34",
 ]
+semantic = [
+    "fastembed>=0.8.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -73,3 +76,11 @@ python_version = "3.12"
 strict = true
 disallow_untyped_defs = true
 warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# fastembed is an optional dependency (the `[semantic]` extra, decisions.md
+# D-052/D-057) with no bundled type stubs; matching/semantic.py isolates it
+# behind the Embedder protocol so this override never leaks fastembed's own
+# (unchecked) types past that one module.
+module = ["fastembed.*", "onnxruntime.*"]
+ignore_missing_imports = true

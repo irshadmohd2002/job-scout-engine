@@ -19,6 +19,16 @@ from job_scout.repository.sqlite_repo import SqliteJobRepository
 from job_scout.resources import template_text
 
 # (packaged template name, AppPaths attribute it's copied to)
+#
+# semantic_matching.example.yaml (Milestone 3 D3, decisions.md D-057 point
+# 8) is deliberately NOT copied here yet: `config.load_semantic_config`
+# already falls back to the packaged template automatically when no local
+# override exists (the same D-021 mechanism execution_limits.yaml/
+# scoring_weights.yaml/source_scoring_weights.yaml rely on below), so
+# `job-scout init` needs no change for the config surface to work. Adding
+# it to `job-scout init`'s copy list is deferred to whichever Milestone 3
+# D3 phase wires semantic matching into the CLI/pipeline, so this
+# CLI-visible behaviour doesn't change ahead of that.
 _TEMPLATE_TARGETS: tuple[tuple[str, str], ...] = (
     ("candidate_profile.example.yaml", "candidate_profile_path"),
     ("search_profiles.example.yaml", "search_profiles_path"),

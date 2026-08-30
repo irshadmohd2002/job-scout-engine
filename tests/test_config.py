@@ -659,6 +659,97 @@ def test_source_scoring_weights_falls_back_to_packaged_template(tmp_path: Path) 
     assert abs(sum(weights.component_weights().values()) - 1.0) < 1e-6
 
 
+# --- SemanticConfig (Milestone 3 D3, Phase 1 — decisions.md D-057 point 8) --
+
+
+def test_semantic_config_falls_back_to_packaged_template(tmp_path: Path) -> None:
+    semantic = config.load_semantic_config(data_dir=tmp_path / "empty-data-dir")
+    assert semantic.enabled is False
+    assert semantic.model_name == "BAAI/bge-small-en-v1.5"
+    assert 0.0 <= semantic.similarity_threshold <= 1.0
+    assert 0.0 <= semantic.rescue_cap <= 1.0
+
+
+def test_semantic_config_loads_explicit_override(tmp_path: Path) -> None:
+    p = tmp_path / "semantic_matching.yaml"
+    p.write_text(
+        """
+enabled: true
+model_name: BAAI/bge-small-en-v1.5
+similarity_threshold: 0.82
+rescue_cap: 0.55
+""",
+        encoding="utf-8",
+    )
+    semantic = config.load_semantic_config(p)
+    assert semantic.enabled is True
+    assert semantic.similarity_threshold == 0.82
+    assert semantic.rescue_cap == 0.55
+
+
+def test_semantic_config_default_model_name_when_omitted(tmp_path: Path) -> None:
+    p = tmp_path / "semantic_matching.yaml"
+    p.write_text(
+        """
+enabled: false
+similarity_threshold: 0.8
+rescue_cap: 0.6
+""",
+        encoding="utf-8",
+    )
+    semantic = config.load_semantic_config(p)
+    assert semantic.model_name == "BAAI/bge-small-en-v1.5"
+
+
+def test_semantic_config_rejects_similarity_threshold_out_of_range(tmp_path: Path) -> None:
+    p = tmp_path / "semantic_matching.yaml"
+    p.write_text(
+        """
+enabled: true
+similarity_threshold: 1.5
+rescue_cap: 0.6
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_semantic_config(p)
+
+
+def test_semantic_config_rejects_rescue_cap_out_of_range(tmp_path: Path) -> None:
+    p = tmp_path / "semantic_matching.yaml"
+    p.write_text(
+        """
+enabled: true
+similarity_threshold: 0.8
+rescue_cap: -0.1
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_semantic_config(p)
+
+
+def test_semantic_config_rejects_blank_model_name(tmp_path: Path) -> None:
+    p = tmp_path / "semantic_matching.yaml"
+    p.write_text(
+        """
+enabled: true
+model_name: "   "
+similarity_threshold: 0.8
+rescue_cap: 0.6
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(config.ConfigError):
+        config.load_semantic_config(p)
+
+
+def test_semantic_config_explicit_path_must_exist(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.yaml"
+    with pytest.raises(config.ConfigError):
+        config.load_semantic_config(missing)
+
+
 def test_explicit_path_wins_over_data_dir(tmp_path: Path) -> None:
     """Priority: an explicit path argument always wins over --data-dir /
     JOB_SCOUT_DATA_DIR / platformdirs (architecture.md section 15.1)."""

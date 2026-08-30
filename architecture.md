@@ -619,10 +619,12 @@ The strong-title gate's phrase-vs-title matching is `matching.normalize.match_ph
 (decisions.md D-032, Part 3) — so a job cannot pass this gate on title
 evidence that Stage 5 then fails to recognise as the same evidence.
 
-### Stage 3 — Semantic similarity (not in M1)
+### Stage 3 — Semantic similarity (not yet integrated)
 Interface reserved (`SemanticResult` field on `MatchResult`). Will use
 embeddings to catch equivalents like "Head of Special Projects" ↔ strategic
-initiatives.
+initiatives. Milestone 3 D3's backend boundary (config surface + local
+`Embedder`) is implemented as of §23 below; `SemanticResult`'s finalized
+schema and the Stage 5 rescue wiring described there are not yet built.
 
 ### Stage 4 — Optional Anthropic extraction (not in M1)
 Interface reserved (`LlmExtraction` field). Runs only on jobs that clear Stage
@@ -1768,3 +1770,75 @@ network, or persistence involvement, and no change to
   pre-filter while several `weak_match` fixtures in the same dataset do
   not), documented in that fixture's own `rationale`, so the
   ranking-inversions metric has a real pair to detect in normal test runs.
+
+## 23. Milestone 3 D3, Phase 1: semantic backend boundary (implemented)
+
+Implements only the dependency/config/backend boundary decisions.md D-057
+finalized — no Stage 5 integration, no `SemanticResult` redesign yet. A
+later Milestone 3 D3 phase builds `SemanticResult`/`SemanticMatch`
+(decisions.md D-057 point 4), the deterministic chunking contract (point
+5), and the rescue-only Stage 5 wiring (point 6) on top of this boundary.
+
+- **New optional dependency**: `fastembed>=0.8.0` under a new
+  `[semantic]` extra (`pyproject.toml`), never a core dependency —
+  `job-scout run-once`/`evaluate` import and run correctly with it absent,
+  the same optionality discipline `[llm]`/`ANTHROPIC_MODEL` already
+  established (CLAUDE.md hard constraint 3, decisions.md D-052).
+  `[[tool.mypy.overrides]]` adds `ignore_missing_imports` for
+  `fastembed.*`/`onnxruntime.*` (no bundled type stubs) — scoped to those
+  two module globs only, so `mypy --strict` stays fully strict for every
+  first-party module, including `matching/semantic.py` itself.
+- **New module `matching/semantic.py`**: the `Embedder` protocol
+  (`embed(texts: list[str]) -> list[list[float]]`), `SemanticBackendUnavailable`,
+  `FastEmbedBackend`, and `get_default_embedder(model_name, cache_dir) ->
+  Embedder`. `fastembed`/`onnxruntime` types never leak past this module
+  (decisions.md D-052) — `from fastembed import TextEmbedding` happens
+  lazily inside `FastEmbedBackend._loaded_model`, so importing
+  `matching/semantic.py`, constructing `FastEmbedBackend`, or calling
+  `get_default_embedder` triggers no model load and no network call; only
+  a backend's first real `.embed()` call does (decisions.md D-057 point
+  2). Any import failure, model-load failure, or embedding-computation
+  failure raises `SemanticBackendUnavailable` — no Stage 3 call site
+  exists yet in this phase to catch it (that lands with the next D3
+  phase).
+- **New config surface `SemanticConfig`** (`config.py`): `enabled: bool`,
+  `model_name: str = "BAAI/bge-small-en-v1.5"`, `similarity_threshold:
+  float` and `rescue_cap: float` (both validated to `[0, 1]`) — loaded by
+  `config.load_semantic_config()`, following the exact
+  explicit-path-else-`AppPaths`-default-else-packaged-template fallback
+  `_load_with_template_fallback` already implements for
+  `ExecutionLimits`/`ScoringWeights`/`SourceScoringWeights` (§15.2,
+  decisions.md D-013/D-014/D-021). Kept as its own file/model, not folded
+  into `ScoringWeights` — Milestone 3 D4 re-tunes `scoring_weights.yaml`
+  weights only (`MILESTONE_3.md` D4's own constraint).
+- **New packaged template `semantic_matching.example.yaml`**
+  (`src/job_scout/resources/templates/`, added to `TEMPLATE_NAMES`):
+  `enabled: false` by default; `similarity_threshold`/`rescue_cap` values
+  are documented as uncalibrated starting points (decisions.md D-057's
+  calibration finding), not a validated default — Milestone 3 D4 tunes
+  them empirically via `job-scout evaluate`. Not yet added to
+  `bootstrap.py`'s `job-scout init` copy list — `load_semantic_config`'s
+  packaged-template fallback already makes the config surface work with
+  no local override, so `job-scout init`'s created-file set is unchanged
+  in this phase; a later phase adds the copy once Stage 5 integration
+  gives a user a reason to hand-edit it.
+- **New `AppPaths` fields**: `semantic_matching_path` (`config_dir /
+  "semantic_matching.yaml"`, same fallback treatment as
+  `scoring_weights_path`) and `embeddings_cache_dir` (`cache_dir /
+  "embeddings"`) — the local embedding model's on-disk cache, passed to
+  `fastembed` as `cache_dir=`, under the existing per-user cache
+  directory, never inside the repository and never fastembed's own
+  default OS cache path (decisions.md D-057 point 9). `FastEmbedBackend`
+  creates this directory lazily (`Path.mkdir(parents=True,
+  exist_ok=True)`) inside `_loaded_model`, not at construction time.
+- **Tests**: `tests/test_semantic.py` (Embedder protocol/`StubEmbedder`
+  conformance, lazy-construction-triggers-no-import/no-directory
+  assertions, `SemanticBackendUnavailable` on a forced `fastembed` import
+  failure via `monkeypatch.setitem(sys.modules, "fastembed", None)`);
+  `tests/test_config.py`/`tests/test_paths.py` extended for
+  `SemanticConfig` loading (template fallback, explicit override, range
+  validation) and the two new `AppPaths` fields. The default suite never
+  imports `fastembed` and never downloads a model (decisions.md D-057
+  point 10) — verified by `test_constructing_default_embedder_triggers_no_model_load_or_import`
+  asserting `"fastembed" not in sys.modules` after construction, run
+  against a dev environment with the `[semantic]` extra not installed.
