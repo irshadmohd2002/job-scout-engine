@@ -2452,3 +2452,192 @@ measured against the existing evaluate tool) rather than re-opening R-11
 under cover of a weight change — the same "smallest change that satisfies
 the actual requirement" discipline this project applied to D-015, D-033,
 and others.
+
+### D-057: D3 implementation design — `Embedder` protocol, `SemanticResult`/
+`SemanticMatch` shape, rescue-only Stage 5 integration, and calibration-
+parameter deferral
+**Decision**: This ADR finalizes D3's implementation-time design (the
+category-level backend/evidence/discovery decisions were already fixed by
+D-052/D-053/D-054), settled as the pre-implementation design sign-off:
+
+1. **Backend**: `fastembed>=0.8.0`, model `BAAI/bge-small-en-v1.5` (384-dim,
+   quantized ONNX, CPU-only via ONNX Runtime), installed only under a new
+   `[semantic]` optional extra. No PyTorch, no vector database, no
+   API/LLM dependency for the embedding computation itself — verified per
+   D-016's evidence bar: Python 3.12-compatible, `mypy --strict`-clean
+   behind a narrow wrapper, no conflict with the project's existing `httpx`
+   dependency (fastembed uses `requests`/`huggingface_hub` for its one-time
+   model download, not `httpx`).
+2. **`Embedder` protocol**, in a new module `matching/semantic.py` — the
+   only import boundary `matching/scoring.py` is allowed to cross into the
+   semantic subsystem:
+   ```python
+   class Embedder(Protocol):
+       def embed(self, texts: list[str]) -> list[list[float]]: ...
+   ```
+   `FastEmbedBackend` implements it in the same module; `fastembed`/
+   `onnxruntime` types never leak past this module. Backend loading is
+   **lazy** — constructing the backend or calling a `get_default_embedder()`
+   factory triggers no model load and no network call; only the first real
+   `.embed()` call does.
+3. **Failure behaviour**: `SemanticBackendUnavailable(Exception)`, raised by
+   the factory/backend on import failure, a model-download/network failure
+   with no usable local cache, or a corrupted cache. Caught once, at the
+   single Stage 3 call site — it never aborts `run-once`/`evaluate`. On
+   catch, Stage 3 produces `SemanticResult(matches=[], backend_available=
+   False, unavailable_reason=<message>)` and Stage 5 proceeds keyword-only
+   for every affected job. A concise warning/hint may be logged at the
+   point semantic matching was skipped, but it must read as "semantic
+   signal unavailable this run," never as a job-processing failure. No new
+   CLI command is added solely to pre-download the model — the existing
+   lazy-download-on-first-use path is the only mechanism; a user without
+   network on first use simply runs with keyword-only scoring until a later
+   run has connectivity.
+4. **`SemanticResult`/`SemanticMatch` schema** (finalizes the placeholder
+   `MatchResult.semantic_result` field reserved since M1, never populated
+   before now):
+   ```python
+   class SemanticMatch(BaseModel):
+       configured_phrase: str
+       configured_phrase_source: str
+       job_text_field: str
+       job_text_span: str
+       similarity: float
+       evidence: str
+
+   class SemanticResult(BaseModel):
+       matches: list[SemanticMatch] = []
+       backend_available: bool = True
+       unavailable_reason: str | None = None
+   ```
+   `similarity` is raw cosine similarity clamped to `[0, 1]` — documented
+   everywhere, including every rendered `evidence` string, as "cosine
+   similarity" or "semantic similarity," **never** a percentage or a
+   probability (matches `final_score`'s own "relevance score, never a
+   probability" discipline, evaluation.py). Every `SemanticMatch.evidence`
+   string carries a fixed caveat that the match indicates textual/semantic
+   **relatedness, not confirmed role equivalence** — required in every
+   rendering, not just when a reviewer might otherwise misread a high
+   number as certainty. Satisfies D-053 directly: evidence always names the
+   specific configured phrase, its provenance tier, and the specific
+   job-text field/span compared, never a bare float.
+5. **Deterministic chunking contract**: preserves newline/bullet boundaries
+   first (the normalizer's already-preserved paragraph/list breaks); an
+   overlong resulting block is further split on sentence-ending/clause
+   punctuation; a block with neither newlines nor that punctuation falls
+   back to fixed-width character windows; no chunk is ever dropped — every
+   character of `description_text` belongs to some chunk. No
+   sentence-tokenizer dependency. The job title is never chunked (always
+   one short string). For each configured phrase, the kept `SemanticMatch`
+   is the single best (max) similarity across the title and every
+   description chunk — mirrors the existing "single strongest match wins"
+   precedent (`_combine_title_role_family`, D-033/D-034), not an average;
+   title-field evidence is preferred over description-chunk evidence when
+   similarities are close, consistent with the existing
+   `_DESCRIPTION_FIELD_DAMPING` precedent.
+6. **Stage 3 → Stage 5 integration is rescue-only, and `title_role_family`
+   only in D3** (no `responsibilities` rescue yet):
+   `raw_value = max(keyword_raw_value, min(best_semantic_similarity,
+   RESCUE_CAP))`, applied only when `best_semantic_similarity >=
+   SIMILARITY_THRESHOLD`. Semantic signal can only **raise**
+   `title_role_family`'s raw value; it never lowers a keyword-derived
+   score, and `RESCUE_CAP` keeps it from ever outranking a real exact
+   keyword match (which already reaches the formula's maximum). No new
+   `ScoreComponent`, no new `ScoringWeights` field — `title_role_family`'s
+   existing 0.25 weight is unchanged; only that component's `raw_value`
+   input gains a second, bounded source. `responsibilities` rescue is
+   explicitly left for D4 to consider empirically, not built now.
+7. **Calibration parameters are NOT finalized by this ADR.**
+   `SIMILARITY_THRESHOLD` and `RESCUE_CAP` are exposed as configuration
+   values (see point 8), not hard-coded constants, specifically so D4 can
+   sweep them against `job-scout evaluate` rather than editing code. See
+   "Calibration finding" below for the empirical grounding gathered before
+   this sign-off — it informs the range D4 should search, it does not fix
+   a number.
+8. **Configuration surface**: a new `SemanticConfig` model and packaged
+   template `semantic_matching.example.yaml` (fields: `enabled: bool`,
+   `model_name: str = "BAAI/bge-small-en-v1.5"`, `similarity_threshold:
+   float`, `rescue_cap: float`), resolved via a new
+   `AppPaths.semantic_matching_path`, following the exact template-fallback
+   convention D-021 already established for every other config file. Kept
+   separate from `scoring_weights.yaml`, which stays weights-only per D4's
+   own constraint.
+9. **Model cache**: a new `AppPaths.embeddings_cache_dir` under the
+   existing per-user cache directory, passed to fastembed as `cache_dir=`.
+   The model artifact (measured 128 MB on disk) lives there, never inside
+   the repository and never at fastembed's own default OS cache path.
+10. **Testing**: a new opt-in `pytest -m semantic_integration` marker,
+    excluded by default `addopts` alongside the existing `integration`
+    marker, gates the one test suite that loads the real model and asserts
+    realistic *ordering* (not exact floats, which a future model-file
+    update could shift). The default suite never imports `fastembed` and
+    never downloads anything — it injects a deterministic `StubEmbedder`
+    through the `Embedder | None` parameter on the Stage 3 call site,
+    mirroring the existing `respx`-mocked-HTTPX pattern for adapters.
+
+**Calibration finding (informational — grounds D4's search range, does not
+fix a default)**: before this sign-off, cosine similarity was computed, in
+an isolated environment outside the repository, between every configured
+`target_titles`/`title_aliases`/`role_families` phrase (from both the
+search profile and the candidate profile) and every fixture's title and
+description text, in both existing evaluation datasets
+(`tests/fixtures/evaluation/strategy_chief_of_staff/`,
+`.../software_engineering/`) — read-only, no fixture modified. Findings:
+- `strong_match`/`hard_filter_reject` fixtures score ~1.000 (they reuse a
+  configured phrase verbatim in the title) — expected, and confirms
+  similarity alone says nothing about hard-filter eligibility, which is
+  exactly why rescue only ever runs on jobs that already passed Stage 1/2.
+- `adjacent_match`: 0.794–0.969 (mean ≈0.85–0.88).
+- `weak_match`: 0.642–0.776 (mean ≈0.69–0.71).
+- `deceptive_false_positive`: 0.698–0.798 (mean ≈0.71–0.76).
+- **The `deceptive_false_positive` and `weak_match` bands overlap almost
+  entirely, and `deceptive_false_positive`'s upper end (0.798) reaches into
+  `adjacent_match`'s lower end (0.794).** A single similarity threshold
+  anywhere in the ~0.65–0.85 range cannot cleanly separate genuinely
+  rescue-worthy jobs from the deceptive fixtures this dataset was
+  specifically built to catch (`MILESTONE_2.md` D-043's "Strategy Analyst
+  vs. Investment Analyst" pattern) — the deceptive fixtures were
+  deliberately written to be keyword/topically dense, which is exactly
+  what raw cosine similarity also responds to.
+- **Neither existing dataset contains a fixture representing D3's actual
+  motivating scenario** — a genuine role equivalent sharing *no* configured
+  vocabulary at all (`MILESTONE_3.md`'s own example: "Head of Special
+  Projects" ↔ strategic initiatives). Every current `adjacent_match`
+  fixture already shares a configured `role_families` phrase directly. The
+  existing dataset can confirm D3 doesn't regress already-covered cases; it
+  cannot confirm D3 catches the case it was built for.
+- **Implication for calibration**: `RESCUE_CAP` should stay conservative,
+  and `SIMILARITY_THRESHOLD` likely needs to sit above the observed
+  deceptive band's ceiling (~0.80) to reliably exclude the current
+  deceptive fixtures — but the exact values remain D4's empirical call,
+  informed by this data, not fixed here.
+
+**Alternatives**: A larger general-purpose embedding model (rejected — no
+evidence it separates deceptive-vs-genuine matches any better than
+bge-small, at real size/latency cost). Locking a sentence-tokenizer-based
+chunking approach upfront (rejected — the user's own instruction was not to
+assume prose/sentence structure before defining the contract; regex-based
+splitting on the normalizer's already-preserved boundaries is simpler and
+dependency-free). A new `ScoreComponent`/`ScoringWeights` field for
+semantic similarity (rejected — conflicts with D4's constraint against a
+scoring-schema change; rescue-only integration achieves D3's goal without
+one). Fixing `SIMILARITY_THRESHOLD`/`RESCUE_CAP` numerically in this ADR
+(rejected per explicit instruction — the calibration finding above shows
+why a number chosen now would be unfounded: the deceptive/weak bands
+overlap tightly, and no fixture yet exercises the true target scenario).
+Adding a new fixture now to exercise that target scenario (rejected for
+this sign-off pass specifically — fixtures are out of scope for this ADR;
+recorded as an open follow-up instead).
+**Why**: Every provision above traces to an already-fixed constraint
+(D-052/D-053/D-054/D-056, CLAUDE.md hard constraints 3/5/9/10) or to
+evidence gathered specifically to avoid guessing (the calibration finding)
+— this ADR fills in *how* D3 is built, not *whether* any of its
+category-level decisions change.
+**Open follow-up (not resolved by this ADR)**: exact
+`SIMILARITY_THRESHOLD`/`RESCUE_CAP` values (D4, empirical, via `job-scout
+evaluate`); whether `responsibilities` also gets rescue treatment (D4,
+empirical); whether the evaluation fixture set needs a fixture representing
+the true zero-vocabulary-overlap scenario for D4 to validate D3's actual
+motivating case (a decision for the user, constrained by this pass's
+instruction not to modify fixtures); exact cold-start hint wording when the
+backend is unavailable.

@@ -242,6 +242,15 @@ See `decisions.md` D-052 through D-056 for the full reasoning. Summary:
 - **D-056**: D4 re-tunes against the existing two-profession evaluation
   dataset by default; a third group is added only if genuinely needed, not
   as general dataset growth.
+- **D-057**: D3's finalized implementation design — `fastembed>=0.8.0` /
+  `BAAI/bge-small-en-v1.5` behind an `Embedder` protocol
+  (`matching/semantic.py`), lazy backend loading, `SemanticBackendUnavailable`
+  degrading to a no-signal `SemanticResult` (never aborting the pipeline),
+  a `SemanticMatch`-based evidence shape, deterministic newline-first/
+  punctuation-fallback chunking, and Stage 5 integration that is
+  rescue-only and `title_role_family`-only (no new `ScoreComponent`/
+  `ScoringWeights` field). `SIMILARITY_THRESHOLD`/`RESCUE_CAP` are exposed
+  as configuration, deliberately left uncalibrated for D4 to tune.
 
 ## Acceptance criteria
 
