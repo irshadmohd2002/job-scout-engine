@@ -283,3 +283,105 @@ fixtures:
       communications material, not as the role's actual function -- a
       communications/admin role dressed in strategy vocabulary, correctly
       too thin to even clear the Stage 2 pre-filter.
+
+  # D3 implementation (decisions.md D-057 "Open follow-up"): the three
+  # fixtures below were added specifically because the pre-D3 similarity
+  # analysis found neither existing dataset exercised D3's actual
+  # motivating scenario (a genuine role equivalent sharing zero configured
+  # target_title/title_alias/role_family vocabulary). No existing fixture
+  # above was altered or removed.
+  - job_id: a-semrescue-1
+    title: "Head of Special Projects (Strategic Planning & Program Management)"
+    company: "Example Employer"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Reports directly to the CEO, owning the executive office's
+      highest-priority cross-functional initiatives end to end.
+      Coordinates senior leadership on organisation-wide priorities,
+      provides hands-on stakeholder management with department heads, and
+      drives program management across multiple concurrent workstreams.
+      Financial modelling exposure is a plus, along with strong
+      cross-functional leadership. Professional services background,
+      private sector employer. MBA preferred. Visa sponsorship available
+      for the right candidate.
+    rationale: >
+      A genuine chief-of-staff-equivalent role (MILESTONE_3.md's own
+      motivating example, "Head of Special Projects") with zero literal
+      overlap against any configured target_title, title_alias, or
+      role_family: "Head of Special Projects" shares no token-coverage-
+      qualifying overlap with "Chief of Staff" / "Head of Strategy" /
+      "strategy and planning" / "chief of staff" (verified analytically --
+      the strongest partial overlap, "head", covers only 1 of "Head of
+      Strategy"'s 2 content tokens, 0.5 < the 0.75 coverage threshold), so
+      Stage 5's keyword-only title_role_family component scores this job
+      0.0 despite matching every configured required/preferred skill,
+      seniority, sector, education, and visa signal a strong match
+      carries. This is D3's actual target scenario: a human reviewer would
+      clearly shortlist this job, but keyword/phrase matching alone cannot
+      see why.
+
+  - job_id: a-semrescue-2
+    title: "Cross-Functional Program Associate"
+    company: "Example Employer"
+    location: {country: DE, city: Berlin}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Supports several department leads with light-touch coordination on
+      ongoing initiatives and meeting logistics. 6-15 years experience
+      preferred, but limited autonomy over prioritisation or stakeholder
+      relationships. Some exposure to program tracking tools. General
+      corporate environment.
+    rationale: >
+      A real but thin functional relationship to the target role --
+      genuine program-coordination exposure, but low-autonomy and without
+      the sector/education/skill depth the strong and adjacent fixtures
+      carry. Experience range deliberately kept inside the search
+      profile's 6-15 year window (matching a-weak-1's own convention) so
+      this fixture is rejected on content thinness at Stage 2, not on the
+      Stage 1 experience-range hard filter. Zero configured
+      title/role_family vocabulary overlap, same as a-semrescue-1, but
+      included to exercise the borderline band of semantic similarity
+      specifically: a reasonable person would recognise some relatedness
+      but would not treat this as a real chief-of-staff-equivalent
+      shortlist candidate. D3's rescue must not promote this above the
+      weak_match band merely because it is topically adjacent.
+
+  - job_id: a-semrescue-3
+    title: "Strategic Communications Manager, Strategic Planning, Stakeholder Management & Program Management"
+    company: "Example Employer"
+    location: {country: NL, city: Amsterdam}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Crafts internal and external messaging around the company's
+      strategic priorities and executive initiatives, loosely referencing
+      strategic planning frameworks, stakeholder management touchpoints,
+      program management milestones, and financial modelling assumptions
+      in its content calendar. Partners with senior leadership on
+      communications planning for major organisational initiatives. A
+      communications and content role, not a program-leadership or
+      operational-execution position -- this role never owns delivery of
+      the initiatives it writes about. Professional services, private
+      sector employer.
+    rationale: >
+      Deliberately keyword/topically dense in the target vocabulary
+      (strategic planning, stakeholder management, program management,
+      financial modelling, professional services, private sector)
+      without the role itself
+      performing any strategic-planning, stakeholder-management, or
+      program-management execution -- a communications function dressed
+      in the target role's language, MILESTONE_2.md D-043's pattern
+      (mirrors a-deceptive-2's own technique), included specifically so
+      this fixture clears the Stage 2 pre-filter and reaches a real
+      (low) Stage 5 keyword-only score, exercising the calibration risk
+      decisions.md D-057 already flagged for D3: raw semantic similarity
+      alone tends to rate this kind of posting as closely related to the
+      configured role vocabulary, so RESCUE_CAP/SIMILARITY_THRESHOLD must
+      not let semantic evidence alone promote it above that real,
+      low, keyword-only score.

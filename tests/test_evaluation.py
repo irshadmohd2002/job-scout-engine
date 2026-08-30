@@ -121,7 +121,7 @@ def test_load_evaluation_dataset_loads_tracked_strategy_dataset() -> None:
     dataset = load_evaluation_dataset(
         _FIXTURES_DIR / "strategy_chief_of_staff" / "dataset.yaml"
     )
-    assert len(dataset) == 15
+    assert len(dataset) == 18
     labels = {f.label for f in dataset}
     assert labels == set(EvaluationLabel)
 
@@ -130,7 +130,7 @@ def test_load_evaluation_dataset_loads_tracked_software_dataset() -> None:
     dataset = load_evaluation_dataset(
         _FIXTURES_DIR / "software_engineering" / "dataset.yaml"
     )
-    assert len(dataset) == 15
+    assert len(dataset) == 18
     labels = {f.label for f in dataset}
     assert labels == set(EvaluationLabel)
 
@@ -191,6 +191,21 @@ def test_strategy_dataset_per_fixture_scores_and_tiers_match_hand_computation() 
     assert by_id["a-deceptive-2"].final_score == 42.83
     assert by_id["a-deceptive-2"].notification_tier == NotificationTier.STORE_ONLY
 
+    # D3 implementation fixtures (decisions.md D-057 "Open follow-up"): a
+    # genuine zero-title/role-family-vocabulary role equivalent
+    # (a-semrescue-1), a genuinely thin borderline case that stays
+    # correctly too weak for Stage 2 (a-semrescue-2), and a deceptive
+    # false positive using the same zero-title/role-family-vocabulary
+    # technique (a-semrescue-3) -- see MILESTONE_3.md D3.
+    assert by_id["a-semrescue-1"].final_score == 52.0
+    assert by_id["a-semrescue-1"].notification_tier == NotificationTier.STORE_ONLY
+    assert by_id["a-semrescue-1"].final_score < 88.0
+    assert by_id["a-semrescue-2"].final_score is None
+    assert by_id["a-semrescue-2"].notification_tier == NotificationTier.STORE_ONLY
+    assert by_id["a-semrescue-2"].hard_filter_passed is True
+    assert by_id["a-semrescue-3"].final_score == 39.5
+    assert by_id["a-semrescue-3"].notification_tier == NotificationTier.STORE_ONLY
+
 
 def test_strategy_dataset_aggregate_metrics_match_hand_computation() -> None:
     dataset, candidate, search, weights = _load_group(
@@ -198,48 +213,55 @@ def test_strategy_dataset_aggregate_metrics_match_hand_computation() -> None:
     )
     report = run_evaluation(dataset, candidate, search, weights)
 
-    assert report.dataset_size == 15
+    assert report.dataset_size == 18
     assert report.label_counts == {
         EvaluationLabel.STRONG_MATCH: 3,
-        EvaluationLabel.ADJACENT_MATCH: 3,
-        EvaluationLabel.WEAK_MATCH: 3,
+        EvaluationLabel.ADJACENT_MATCH: 4,
+        EvaluationLabel.WEAK_MATCH: 4,
         EvaluationLabel.HARD_FILTER_REJECT: 3,
-        EvaluationLabel.DECEPTIVE_FALSE_POSITIVE: 3,
+        EvaluationLabel.DECEPTIVE_FALSE_POSITIVE: 4,
     }
 
     # precision@5: top 5 by score are the 3 strong (88 each) + 2 highest
     # adjacent (75.5, 71.83) -> 5/5 relevant.
     assert report.precision_at_5 == 1.0
-    # precision@10: adds the 3rd adjacent (64.33) and the deceptive-2 outlier
-    # (42.83) plus one None-scored (tied last, alphabetical tie-break) ->
-    # 6 relevant out of the top 10.
-    assert report.precision_at_10 == 0.6
-    # precision@20: dataset only has 15 fixtures (min(20, 15) = 15) -> the
-    # same 6 relevant fixtures out of all 15.
-    assert report.precision_at_20 == 0.4
+    # precision@10: adds the 3rd adjacent (64.33), the semrescue-1 adjacent
+    # (52.0), a-deceptive-2 (42.83), and a-semrescue-3 (39.5) -> 7 relevant
+    # out of the top 10.
+    assert report.precision_at_10 == 0.7
+    # precision@20: dataset only has 18 fixtures (min(20, 18) = 18) -> the
+    # same 7 relevant fixtures out of all 18.
+    assert report.precision_at_20 == pytest.approx(7 / 18)
 
     # All 3 strong_match fixtures land in PRIORITY (a surfaced tier) -> perfect
     # recall.
     assert report.recall_of_strong_matches == 1.0
 
     # No deceptive_false_positive fixture lands in PRIORITY/DIGEST -> 0 false
-    # positives, even though a-deceptive-2 does reach a real Stage 5 score.
+    # positives, even though a-deceptive-2/a-semrescue-3 do reach a real
+    # Stage 5 score.
     assert report.false_positive_rate == 0.0
 
     # All 3 hard_filter_reject fixtures are correctly rejected at Stage 1.
     assert report.hard_filter_correctness == 1.0
 
-    # Deliberately inserted inversions (dataset.yaml rationale for
-    # a-deceptive-2): it reaches a real score (42.83) while every
-    # weak_match fixture is None (never reaches Stage 5) -- a
-    # deceptive_false_positive (label rank 3) outscoring a weak_match
-    # (label rank 2) is exactly what the ranking-inversions metric exists to
-    # catch.
-    assert report.ranking_inversions == 3
+    # Deliberately inserted inversions: a-deceptive-2 (42.83) and
+    # a-semrescue-3 (39.5, decisions.md D-057 "Open follow-up" fixture,
+    # same technique) each reach a real score while every weak_match
+    # fixture (including a-semrescue-2) is None (never reaches Stage 5) --
+    # a deceptive_false_positive (label rank 3) outscoring a weak_match
+    # (label rank 2) is exactly what the ranking-inversions metric exists
+    # to catch.
+    assert report.ranking_inversions == 8
     assert set(report.ranking_inversion_pairs) == {
         ("a-weak-1", "a-deceptive-2"),
         ("a-weak-2", "a-deceptive-2"),
         ("a-weak-3", "a-deceptive-2"),
+        ("a-semrescue-2", "a-deceptive-2"),
+        ("a-weak-1", "a-semrescue-3"),
+        ("a-weak-2", "a-semrescue-3"),
+        ("a-weak-3", "a-semrescue-3"),
+        ("a-semrescue-2", "a-semrescue-3"),
     }
     # Every inversion pair has the deceptive fixture as the (wrongly)
     # higher-scoring one and a weak fixture as the (wrongly) lower-scoring
@@ -251,8 +273,12 @@ def test_strategy_dataset_aggregate_metrics_match_hand_computation() -> None:
         "a-weak-1",
         "a-weak-2",
         "a-weak-3",
+        "a-semrescue-2",
     }
-    assert {pair[1] for pair in report.ranking_inversion_pairs} == {"a-deceptive-2"}
+    assert {pair[1] for pair in report.ranking_inversion_pairs} == {
+        "a-deceptive-2",
+        "a-semrescue-3",
+    }
 
 
 def test_software_dataset_aggregate_metrics_match_hand_computation() -> None:
@@ -261,14 +287,20 @@ def test_software_dataset_aggregate_metrics_match_hand_computation() -> None:
     )
     report = run_evaluation(dataset, candidate, search, weights)
 
-    assert report.dataset_size == 15
+    assert report.dataset_size == 18
     assert report.recall_of_strong_matches == 1.0
     assert report.false_positive_rate == 0.0
     assert report.hard_filter_correctness == 1.0
     assert report.precision_at_5 == 1.0
-    assert report.precision_at_10 == 0.6
-    assert report.precision_at_20 == 0.4
-    assert report.ranking_inversions == 6
+    assert report.precision_at_10 == 0.7
+    assert report.precision_at_20 == pytest.approx(7 / 18)
+    # decisions.md D-057 "Open follow-up" fixtures: b-semrescue-1 (adjacent,
+    # zero title/role-family vocabulary overlap) adds no inversion (it
+    # scores below every weak/deceptive fixture's rank expectation is not
+    # violated); b-semrescue-3 (deceptive, same zero-vocabulary technique
+    # as b-deceptive-2/3) reaches a real score against every weak_match
+    # fixture, same pattern as the pre-existing b-deceptive-2/3 inversions.
+    assert report.ranking_inversions == 12
     assert set(report.ranking_inversion_pairs) == {
         ("b-weak-1", "b-deceptive-2"),
         ("b-weak-1", "b-deceptive-3"),
@@ -276,6 +308,12 @@ def test_software_dataset_aggregate_metrics_match_hand_computation() -> None:
         ("b-weak-2", "b-deceptive-3"),
         ("b-weak-3", "b-deceptive-2"),
         ("b-weak-3", "b-deceptive-3"),
+        ("b-weak-1", "b-semrescue-3"),
+        ("b-weak-2", "b-semrescue-3"),
+        ("b-weak-3", "b-semrescue-3"),
+        ("b-semrescue-2", "b-deceptive-2"),
+        ("b-semrescue-2", "b-deceptive-3"),
+        ("b-semrescue-2", "b-semrescue-3"),
     }
 
 

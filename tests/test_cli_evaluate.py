@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from job_scout.cli import app
@@ -45,21 +46,21 @@ def test_evaluate_human_output_strategy_dataset(tmp_path: Path) -> None:
         _STRATEGY_DIR, "strategy_chief_of_staff_eval", data_dir=tmp_path / "data"
     )
     assert result.exit_code == 0, result.output
-    assert "fixtures: 15" in result.output
+    assert "fixtures: 18" in result.output
     assert "precision@5=1.000" in result.output
-    assert "precision@10=0.600" in result.output
-    assert "precision@20=0.400" in result.output
+    assert "precision@10=0.700" in result.output
+    assert "precision@20=0.389" in result.output
     assert "recall_of_strong_matches=1.000" in result.output
     assert "false_positive_rate=0.000" in result.output
     assert "hard_filter_correctness=1.000" in result.output
-    assert "ranking_inversions=3" in result.output
+    assert "ranking_inversions=8" in result.output
 
 
 def test_evaluate_human_output_software_dataset(tmp_path: Path) -> None:
     result = _invoke(_SOFTWARE_DIR, "software_engineering_eval", data_dir=tmp_path / "data")
     assert result.exit_code == 0, result.output
-    assert "fixtures: 15" in result.output
-    assert "ranking_inversions=6" in result.output
+    assert "fixtures: 18" in result.output
+    assert "ranking_inversions=12" in result.output
 
 
 def test_evaluate_json_output_matches_report_shape(tmp_path: Path) -> None:
@@ -71,14 +72,14 @@ def test_evaluate_json_output_matches_report_shape(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["dataset_size"] == 15
+    assert payload["dataset_size"] == 18
     assert payload["precision_at_5"] == 1.0
-    assert payload["precision_at_10"] == 0.6
-    assert payload["precision_at_20"] == 0.4
+    assert payload["precision_at_10"] == 0.7
+    assert payload["precision_at_20"] == pytest.approx(0.3888888888888889)
     assert payload["recall_of_strong_matches"] == 1.0
     assert payload["false_positive_rate"] == 0.0
     assert payload["hard_filter_correctness"] == 1.0
-    assert payload["ranking_inversions"] == 3
+    assert payload["ranking_inversions"] == 8
     assert set(payload["label_counts"].keys()) == {
         "strong_match",
         "adjacent_match",
@@ -86,7 +87,7 @@ def test_evaluate_json_output_matches_report_shape(tmp_path: Path) -> None:
         "hard_filter_reject",
         "deceptive_false_positive",
     }
-    assert len(payload["fixture_results"]) == 15
+    assert len(payload["fixture_results"]) == 18
 
 
 def test_evaluate_output_never_says_probability(tmp_path: Path) -> None:

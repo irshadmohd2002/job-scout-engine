@@ -268,3 +268,96 @@ fixtures:
       performing engineering work itself -- a recruiting/HR role dressed in
       engineering vocabulary, correctly too thin to clear the Stage 2
       pre-filter.
+
+  # D3 implementation (decisions.md D-057 "Open follow-up"): the three
+  # fixtures below were added specifically because the pre-D3 similarity
+  # analysis found neither existing dataset exercised D3's actual
+  # motivating scenario (a genuine role equivalent sharing zero configured
+  # target_title/title_alias/role_family vocabulary). No existing fixture
+  # above was altered or removed.
+  - job_id: b-semrescue-1
+    title: "Distributed Systems Engineer (Python)"
+    company: "Example Tech Co"
+    location: {country: GB, city: London}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: adjacent_match
+    description: >
+      Own reliability and scalability for our core platform services.
+      Build and operate distributed systems written in Python, apply
+      strong api design practices to clean, well documented APIs, and
+      work daily with Kubernetes-based infrastructure. Strong ownership
+      of production systems, cross-team collaboration, and technical
+      mentoring of junior engineers expected. 4-12 years of relevant
+      experience. Technology sector, private sector employer.
+    rationale: >
+      A genuine backend/software-engineering-equivalent role with zero
+      literal overlap against any configured target_title, title_alias, or
+      role_family: "Distributed Systems Engineer" shares no
+      token-coverage-qualifying overlap with "Senior Software Engineer" /
+      "Backend Engineer" / "software engineering" / "backend development"
+      (verified analytically -- the strongest partial overlap, "engineer",
+      covers only 1 of "Backend Engineer"'s 2 content tokens, 0.5 < the
+      0.75 coverage threshold), so Stage 5's keyword-only
+      title_role_family component scores this job 0.0 despite matching
+      every configured required/preferred skill (python, distributed
+      systems, api design, kubernetes) and the seniority/sector/education
+      signal a strong match carries. This is D3's actual target scenario.
+
+  - job_id: b-semrescue-2
+    title: "Technical Support Associate"
+    company: "Example Tech Co"
+    location: {country: DE, city: Berlin}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: weak_match
+    description: >
+      Provides tier-2 technical support for internal engineering tools,
+      triaging bug reports and light scripting fixes. 4-12 years
+      experience preferred, but no ownership of production system design
+      or architecture decisions. Some Python familiarity. General
+      technology environment.
+    rationale: >
+      A real but thin technical relationship to the target role -- genuine
+      Python exposure, but support-function-only, with no
+      distributed-systems or api-design ownership the strong/adjacent
+      fixtures carry. Experience range deliberately kept inside the
+      search profile's 4-12 year window (matching b-weak-1's own
+      convention) so this fixture is rejected on content thinness at
+      Stage 2, not on the Stage 1 experience-range hard filter. Zero
+      configured title/role_family vocabulary overlap, same as
+      b-semrescue-1, but included to exercise the borderline band of
+      semantic similarity specifically: some real relatedness, but not a
+      genuine engineering-role shortlist candidate. D3's rescue must not
+      promote this above the weak_match band merely because it mentions
+      Python and engineering tools.
+
+  - job_id: b-semrescue-3
+    title: "Technical Program Manager, Distributed Systems & API Design"
+    company: "Example Tech Co"
+    location: {country: NL, city: Amsterdam}
+    employment_type: full_time
+    posted_at: "2026-01-01T00:00:00+00:00"
+    label: deceptive_false_positive
+    description: >
+      Owns the roadmap and cross-team coordination for distributed systems
+      and api design initiatives, tracking Python-based automation
+      tickets and Kubernetes infrastructure rollouts in status reports
+      without writing or reviewing any of the underlying code. A
+      program-management role, not a hands-on coding position --
+      responsible for planning and stakeholder alignment rather than
+      technical mentoring or system design. Technology sector, private
+      sector employer.
+    rationale: >
+      Deliberately keyword-dense (distributed systems, api design,
+      Python, Kubernetes, technology, private sector -- mirrors
+      b-deceptive-2's own technique) despite being an administrative
+      program-coordination role that never actually performs
+      software-engineering work -- MILESTONE_2.md D-043's pattern,
+      included specifically so this fixture clears the Stage 2
+      pre-filter and reaches a real (low) Stage 5 keyword-only score,
+      exercising the calibration risk decisions.md D-057 already flagged
+      for D3: raw semantic similarity alone tends to rate this kind of
+      posting as closely related to the configured role vocabulary, so
+      RESCUE_CAP/SIMILARITY_THRESHOLD must not let semantic evidence
+      alone promote it above that real, low, keyword-only score.
